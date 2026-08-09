@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# Build and publish one exact commit. Every input is validated before Docker
+# sees it; deployed applications receive no host mounts or Docker socket.
+set -Eeuo pipefail
+
+usage() {
+  echo "Usage: $0 --source DIR --sha SHA --slug PROJECT-PR-N --port APP_PORT [--health-path PATH] [--env-file FILE]" >&2
+  exit 2
+}
+
+SOURCE=""
+SHA=""
+SLUG=""
+APP_PORT=""
+HEALTH_PATH="/"
+ENV_FILE_RUNTIME=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --source) SOURCE=${2:?missing source}; shift 2 ;;
+    --sha) SHA=${2:?missing sha}; shift 2 ;;
+    --slug) SLUG=${2:?missing slug}; shift 2 ;;
+    --port) APP_PORT=${2:?missing port}; shift 2 ;;
+    --health-path) HEALTH_PATH=${2:?missing health path}; shift 2 ;;
+    --env-file) ENV_FILE_RUNTIME=${2:?missing env file}; shift 2 ;;
+    *) usage ;;
+  esac
+done
+
+[[ -d "$SOURCE" && -f "$SOURCE/Dockerfile" ]] || { echo "source must contain a Dockerfile: $SOURCE" >&2; exit 1; }
+[[ "$SHA" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "--sha must be a 40-character commit SHA" >&2; exit 1; }
+[[ "$SLUG" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || { echo "invalid deployment slug" >&2; exit 1; }
+[[ "$APP_PORT" =~ ^[1-9][0-9]{0,4}$ && "$APP_PORT" -le 65535 ]] || { echo "invalid application port" >&2; exit 1; }
+[[ "$HEALTH_PATH" == /* ]] || { echo "health path must start with /" >&2; exit 1; }
+if [[ -n "$ENV_FILE_RUNTIME" ]]; then
+  [[ -f "$ENV_FILE_RUNTIME" ]] || { echo "runtime env file does not exist" >&2; exit 1; }
+  chmod 600 "$ENV_FILE_RUNTIME"
+fi
+
+# All writable artifacts are rooted below GP_CLOUD_ROOT. The control service
+# passes a deployment workspace from this same tree; this avoids accidentally
+# treating an arbitrary host directory as a build context.
+ROOT=${GP_CLOUD_ROOT:-/opt/gp-cloud}
+DEPLOYMENTS="$ROOT/deployments"
+ROUTES="$ROOT/config/caddy/routes"
+LOGS="$ROOT/logs/$SLUG"
+IMAGE="gp-cloud/$SLUG:$SHA"
+CONTAINER="gp-cloud-$SLUG"
+ENV_FILE="$ROOT/config/gp-cloud.env"
+
+SOURCE_REAL=$(realpath -e "$SOURCE")
+DEPLOYMENTS_REAL=$(realpath -m "$DEPLOYMENTS")
+[[ "$SOURCE_REAL" == "$DEPLOYMENTS_REAL/"* ]] || { echo "source must be inside $DEPLOYMENTS" >&2; exit 1; }
+
+if [[ -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+fi
+
+: "${GP_CLOUD_PREVIEW_DOMAIN:?Set GP_CLOUD_PREVIEW_DOMAIN in $ENV_FILE}"
+HTTP_PORT=${GP_CLOUD_HTTP_PORT:-80}
+CPU_LIMIT=${GP_CLOUD_CPU_LIMIT:-1.0}
+MEMORY_LIMIT=${GP_CLOUD_MEMORY_LIMIT:-768m}
+STARTUP_TIMEOUT=${GP_CLOUD_STARTUP_TIMEOUT_SECONDS:-60}
+HEALTH_TIMEOUT=${GP_CLOUD_HEALTH_TIMEOUT_SECONDS:-60}
+
+mkdir -p "$DEPLOYMENTS/$SLUG" "$LOGS" "$ROUTES"
+exec > >(tee -a "$LOGS/deployment.log") 2>&1
+
+cleanup_on_error() {
+  if [[ "${DEPLOYMENT_SUCCEEDED:-0}" != "1" ]]; then
+    echo "[$(date -Is)] deployment=$SLUG state=FAILED cleaning runtime artifacts"
+    docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+    rm -f "$ROUTES/$SLUG.caddy" "$DEPLOYMENTS/$SLUG/metadata.json"
+    reload_caddy_if_active >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_on_error EXIT
+
+# Caddy is optional in local-only mode. Deployment lifecycle operations must
+# still succeed when the operator intentionally has no public edge enabled.
+reload_caddy_if_active() {
+  if systemctl is-active --quiet caddy; then
+    systemctl reload caddy
+  fi
+}
+
+docker network inspect gp-cloud >/dev/null 2>&1 || docker network create --internal gp-cloud >/dev/null
+
+echo "[$(date -Is)] deployment=$SLUG sha=$SHA state=BUILDING"
+git -C "$SOURCE" rev-parse --verify "$SHA^{commit}" >/dev/null
+CHECKED_OUT=$(git -C "$SOURCE" rev-parse "$SHA^{commit}")
+[[ "${CHECKED_OUT,,}" == "${SHA,,}" ]] || { echo "source checkout does not resolve to requested SHA"; exit 1; }
+
+docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+docker build --pull=false --label "org.gp-cloud.commit=$CHECKED_OUT" --label "org.gp-cloud.deployment=$SLUG" -t "$IMAGE" "$SOURCE" 2>&1 | tee "$LOGS/build.log"
+
+echo "[$(date -Is)] deployment=$SLUG state=STARTING"
+ENV_ARGS=()
+if [[ -n "$ENV_FILE_RUNTIME" ]]; then ENV_ARGS+=(--env-file "$ENV_FILE_RUNTIME"); fi
+docker run -d --name "$CONTAINER" --network gp-cloud \
+  --cpus "$CPU_LIMIT" --memory "$MEMORY_LIMIT" --pids-limit 256 \
+  --cap-drop ALL --security-opt no-new-privileges:true \
+  --read-only --tmpfs /tmp:rw,noexec,nosuid,size=128m \
+  --stop-timeout 10 \
+  --restart unless-stopped "${ENV_ARGS[@]}" --publish "127.0.0.1::${APP_PORT}" "$IMAGE" \
+  > "$LOGS/container-id"
+
+HOST_PORT=$(docker port "$CONTAINER" "$APP_PORT/tcp" | sed -E 's/.*:([0-9]+)$/\1/' | head -1)
+[[ "$HOST_PORT" =~ ^[0-9]+$ ]] || { echo "could not determine published port"; exit 1; }
+
+deadline=$((SECONDS + STARTUP_TIMEOUT))
+while ! docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null | grep -qx true; do
+  (( SECONDS >= deadline )) && { echo "container did not become running"; docker logs "$CONTAINER"; exit 1; }
+  sleep 1
+done
+
+deadline=$((SECONDS + HEALTH_TIMEOUT))
+URL="http://127.0.0.1:${HOST_PORT}${HEALTH_PATH}"
+until curl --fail --silent --show-error --max-time 3 "$URL" >/dev/null; do
+  (( SECONDS >= deadline )) && { echo "health check failed: $URL"; docker logs "$CONTAINER"; exit 1; }
+  sleep 1
+done
+
+HOSTNAME="${SLUG}.${GP_CLOUD_PREVIEW_DOMAIN}"
+cat > "$ROUTES/$SLUG.caddy" <<EOF
+http://$HOSTNAME:$HTTP_PORT {
+    reverse_proxy 127.0.0.1:$HOST_PORT
+}
+EOF
+
+if systemctl is-active --quiet caddy; then
+  caddy validate --config /etc/caddy/Caddyfile
+  systemctl reload caddy
+else
+  echo "[$(date -Is)] caddy is inactive; retaining route for a future public edge"
+fi
+cat > "$DEPLOYMENTS/$SLUG/metadata.json" <<EOF
+{
+  "slug": "$SLUG",
+  "sha": "$CHECKED_OUT",
+  "image": "$IMAGE",
+  "container": "$CONTAINER",
+  "app_port": $APP_PORT,
+  "host_port": $HOST_PORT,
+  "health_url": "$URL",
+  "preview_url": "http://$HOSTNAME",
+  "state": "RUNNING",
+  "created_at": "$(date -Is)"
+}
+EOF
+DEPLOYMENT_SUCCEEDED=1
+echo "[$(date -Is)] deployment=$SLUG state=RUNNING url=http://$HOSTNAME sha=$CHECKED_OUT"

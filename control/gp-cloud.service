@@ -1,0 +1,34 @@
+[Unit]
+Description=gp-cloud deployment control API and worker
+After=network-online.target docker.service caddy.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/gp-cloud/control
+EnvironmentFile=/opt/gp-cloud/config/gp-cloud.env
+ExecStart=/usr/bin/python3 /opt/gp-cloud/control/gp_cloud_control.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictSUIDSGID=true
+InaccessiblePaths=/root /home /media /mnt /srv
+# The service can write only its state, ephemeral deployment workspace, logs,
+# generated Caddy routes, and temporary files. Source code and host config are
+# readable but not writable through the service sandbox.
+ReadWritePaths=/opt/gp-cloud/data /opt/gp-cloud/deployments /opt/gp-cloud/logs /opt/gp-cloud/config /opt/gp-cloud/config/caddy/routes /tmp
+PrivateDevices=true
+ProtectKernelLogs=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target

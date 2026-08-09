@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Remove one deployment's container, route, image, metadata, and source.
+# Logs are intentionally retained for diagnosis unless the dashboard's
+# explicit "Delete all" action purges them.
+set -Eeuo pipefail
+
+SLUG=${1:?Usage: gp-cloud-clean PROJECT-PR-N}
+[[ "$SLUG" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || { echo "invalid deployment slug" >&2; exit 2; }
+
+ROOT=${GP_CLOUD_ROOT:-/opt/gp-cloud}
+CONTAINER="gp-cloud-$SLUG"
+ROUTE="$ROOT/config/caddy/routes/$SLUG.caddy"
+METADATA="$ROOT/deployments/$SLUG/metadata.json"
+
+docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+rm -f "$ROUTE"
+if [[ -f "$METADATA" ]]; then
+  IMAGE=$(sed -nE 's/.*"image": "([^"]+)".*/\1/p' "$METADATA" | head -1)
+  [[ -n "$IMAGE" ]] && docker image rm "$IMAGE" >/dev/null 2>&1 || true
+fi
+# Caddy is optional in local-only mode, so cleanup must not fail merely because
+# there is no public edge to reload.
+if systemctl is-active --quiet caddy; then
+  systemctl reload caddy
+fi
+# Deployment logs are retained for control-plane status and post-mortem
+# inspection. The source workspace and runtime artifacts are ephemeral.
+rm -rf "$ROOT/deployments/$SLUG"
+echo "cleaned $SLUG"

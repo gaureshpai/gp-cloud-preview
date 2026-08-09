@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Print a redacted inventory of the live installation without exposing secret
+# values to a terminal transcript, CI log, or VS Code output panel.
+set -Eeuo pipefail
+
+ROOT=${GP_CLOUD_ROOT:-/opt/gp-cloud}
+echo "GP Cloud root: $ROOT"
+echo
+echo "Configuration (names only; secret values are never printed):"
+if [[ -f "$ROOT/config/gp-cloud.env" ]]; then
+  sed -E 's/=.*$/=<redacted>/' "$ROOT/config/gp-cloud.env"
+else
+  echo "  missing: $ROOT/config/gp-cloud.env"
+fi
+echo
+echo "Deployments:"
+find "$ROOT/deployments" -mindepth 1 -maxdepth 2 -type f -printf '  %p\n' 2>/dev/null | sort || true
+echo
+echo "Logs:"
+find "$ROOT/logs" -mindepth 1 -maxdepth 2 -type f -printf '  %p\n' 2>/dev/null | sort || true
+echo
+echo "Retained source workspaces:"
+find "$ROOT/deployments" -mindepth 3 -maxdepth 3 -type d -name source -printf '  %p\n' 2>/dev/null | sort || true

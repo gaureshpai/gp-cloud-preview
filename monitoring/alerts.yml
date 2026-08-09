@@ -1,0 +1,24 @@
+groups:
+  - name: gp-cloud-host
+    rules:
+      - alert: GpCloudHighMemory
+        expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) > 0.85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: gp-cloud host memory is above 85%
+      - alert: GpCloudLowDisk
+        expr: (1 - node_filesystem_avail_bytes{mountpoint="/",fstype!="rootfs"} / node_filesystem_size_bytes{mountpoint="/",fstype!="rootfs"}) > 0.80
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: gp-cloud root filesystem is above 80%
+      - alert: GpCloudDeploymentFailures
+        expr: increase(gp_cloud_deployments{state="FAILED"}[15m]) > 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: gp-cloud has repeated deployment failures

@@ -1,0 +1,47 @@
+# Local environment and secrets. Keep only the sanitized example in Git.
+.env
+*.env
+*.env.*
+!*.env.example
+!.env.example
+config/gp-cloud.env
+config/*.local
+*.secret
+*.secrets
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Python-generated files.
+**__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local application state and logs.
+*.log
+logs/
+runtime/
+state/
+data/
+tmp/
+
+# Local deployment and tunnel credentials.
+cloudflared/*.json
+cloudflared/*.yml
+cloudflared/*.yaml
+caddy/*.json
+caddy/*.db
+caddy/*.crt
+caddy/*.key
+
+# Editor and operating-system files.
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

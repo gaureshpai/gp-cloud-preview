@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# Idempotently copy the audited control plane into /opt/gp-cloud and configure
+# Caddy/systemd. This script never generates credentials.
+set -Eeuo pipefail
+
+# Install GP Cloud Preview on a Debian/Ubuntu host. Run as root from this
+# checkout, then edit /opt/gp-cloud/config/gp-cloud.env before starting it.
+[[ "${EUID}" -eq 0 ]] || { echo "run as root" >&2; exit 1; }
+
+SOURCE_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+INSTALL_ROOT=/opt/gp-cloud
+CONFIG_ROOT="$INSTALL_ROOT/config"
+
+for command_name in docker git curl caddy systemctl realpath; do
+  command -v "$command_name" >/dev/null || { echo "missing prerequisite: $command_name" >&2; exit 1; }
+done
+
+install -d -m 0750 "$INSTALL_ROOT" "$INSTALL_ROOT/control" "$INSTALL_ROOT/worker" \
+  "$INSTALL_ROOT/config/caddy/routes" "$INSTALL_ROOT/config/monitoring" \
+  "$INSTALL_ROOT/data/deployments" "$INSTALL_ROOT/data/queue" "$INSTALL_ROOT/data/action-tokens" \
+  "$INSTALL_ROOT/deployments" "$INSTALL_ROOT/logs"
+# Caddy must be able to traverse only the route path. It does not receive
+# access to deployment data, logs, or the control service's secret files.
+chgrp caddy "$INSTALL_ROOT" "$CONFIG_ROOT" "$CONFIG_ROOT/caddy" "$CONFIG_ROOT/caddy/routes"
+chmod 0750 "$INSTALL_ROOT" "$CONFIG_ROOT/caddy/routes"
+install -m 0750 "$SOURCE_ROOT/control/gp_cloud_control.py" "$INSTALL_ROOT/control/"
+install -m 0750 "$SOURCE_ROOT/scripts/gp-cloud-deploy" "$INSTALL_ROOT/worker/"
+install -m 0750 "$SOURCE_ROOT/scripts/gp-cloud-clean" "$INSTALL_ROOT/worker/"
+install -m 0750 "$SOURCE_ROOT/scripts/gp-cloud-inspect" "$INSTALL_ROOT/worker/"
+install -m 0644 "$SOURCE_ROOT/monitoring/prometheus.yml" "$INSTALL_ROOT/config/monitoring/"
+install -m 0644 "$SOURCE_ROOT/monitoring/alerts.yml" "$INSTALL_ROOT/config/monitoring/"
+if [[ -f /etc/caddy/Caddyfile ]]; then
+  cp -a /etc/caddy/Caddyfile "/etc/caddy/Caddyfile.gp-cloud-backup.$(date +%s)"
+fi
+install -o caddy -g caddy -m 0640 "$SOURCE_ROOT/caddy/Caddyfile" /etc/caddy/Caddyfile
+install -m 0644 "$SOURCE_ROOT/caddy/gp-cloud-env.conf" /etc/systemd/system/caddy.service.d-gp-cloud-env.conf
+mkdir -p /etc/systemd/system/caddy.service.d
+mv /etc/systemd/system/caddy.service.d-gp-cloud-env.conf /etc/systemd/system/caddy.service.d/gp-cloud-env.conf
+install -m 0644 "$SOURCE_ROOT/control/gp-cloud.service" /etc/systemd/system/gp-cloud.service
+
+if [[ ! -f "$CONFIG_ROOT/gp-cloud.env" ]]; then
+  install -m 0600 "$SOURCE_ROOT/config/gp-cloud.env.example" "$CONFIG_ROOT/gp-cloud.env"
+  echo "created $CONFIG_ROOT/gp-cloud.env; edit it before starting gp-cloud" >&2
+fi
+
+if [[ -d /etc/prometheus ]]; then
+  install -m 0644 "$SOURCE_ROOT/monitoring/prometheus.yml" /etc/prometheus/prometheus.yml
+  install -m 0644 "$SOURCE_ROOT/monitoring/prometheus.default" /etc/default/prometheus
+fi
+
+docker network inspect gp-cloud >/dev/null 2>&1 || docker network create --internal gp-cloud >/dev/null
+systemctl daemon-reload
+# Caddy receives this file from its systemd drop-in at runtime. Load it here
+# too so the installer can validate environment placeholders correctly.
+set -a
+# shellcheck disable=SC1090
+. "$CONFIG_ROOT/gp-cloud.env"
+set +a
+# Keep validation and the systemd drop-in on the same explicit listener values.
+GP_CLOUD_HTTP_PORT=${GP_CLOUD_HTTP_PORT:-80}
+export GP_CLOUD_HTTP_PORT
+GP_CLOUD_CONTROL_PORT=${GP_CLOUD_CONTROL_PORT:-8787}
+export GP_CLOUD_CONTROL_PORT
+umask 077
+printf 'GP_CLOUD_PREVIEW_DOMAIN=%s\nGP_CLOUD_HTTP_PORT=%s\nGP_CLOUD_CONTROL_PORT=%s\n' \
+  "$GP_CLOUD_PREVIEW_DOMAIN" "${GP_CLOUD_HTTP_PORT:-80}" "$GP_CLOUD_CONTROL_PORT" \
+  > "$CONFIG_ROOT/caddy.env"
+chown caddy:caddy "$CONFIG_ROOT/caddy.env"
+chmod 0640 "$CONFIG_ROOT/caddy.env"
+caddy validate --config /etc/caddy/Caddyfile
+# GP Cloud is local-only by default. Operators who intentionally configure a
+# public edge can enable Caddy separately after securing the domain/TLS path.
+systemctl enable gp-cloud.service
+systemctl disable caddy.service >/dev/null 2>&1 || true
+echo "Installation complete. Configure $CONFIG_ROOT/gp-cloud.env, then run:"
+echo "  systemctl restart gp-cloud.service"
+echo "Enable caddy.service only after configuring a secured public edge."

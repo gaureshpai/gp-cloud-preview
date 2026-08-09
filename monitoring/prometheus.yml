@@ -1,0 +1,17 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /opt/gp-cloud/config/monitoring/alerts.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["127.0.0.1:9090"]
+  - job_name: node
+    static_configs:
+      - targets: ["127.0.0.1:9100"]
+  - job_name: gp-cloud
+    static_configs:
+      - targets: ["127.0.0.1:8787"]
