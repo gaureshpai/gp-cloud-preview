@@ -249,9 +249,7 @@ class ControlContractTests(unittest.TestCase):
     def test_deployment_failure_alert_uses_a_time_window(self):
         root = Path(__file__).parents[1]
         alerts = (root / "monitoring/alerts.yml").read_text(encoding="utf-8")
-        self.assertIn(
-            "increase(gp_cloud_deployment_failures_total[1h]) > 3", alerts
-        )
+        self.assertIn("increase(gp_cloud_deployment_failures_total[1h]) > 3", alerts)
         self.assertNotIn('gp_cloud_deployments{state="FAILED"} > 3', alerts)
 
     def test_deploy_harness_rejects_metadata_health_path_injection(self):
@@ -432,6 +430,8 @@ value=${value%\\^\\{commit\\}}
         ):
             self.assertTrue(control.action_token_allows_repo("token", "owner/site"))
             self.assertFalse(control.action_token_allows_repo("token", "owner/other"))
+
+
 class ControlHTTPIntegrationTests(unittest.TestCase):
     """Exercise the real HTTP handler against isolated temporary state."""
 
@@ -879,10 +879,10 @@ class LifecycleRegressionTests(unittest.TestCase):
     def completed(stdout="cleaned\n"):
         """
         Create a successful completed subprocess result with the specified standard output.
-        
+
         Parameters:
             stdout (str): Standard output to include in the result.
-        
+
         Returns:
             subprocess.CompletedProcess: A completed process result with return code 0.
         """
@@ -891,12 +891,12 @@ class LifecycleRegressionTests(unittest.TestCase):
     def enqueue(self, sha="a", project="site", pr_number=0):
         """
         Create a test deployment for the configured repository, project, and pull request.
-        
+
         Parameters:
             sha (str): Value used to construct the commit identifier.
             project (str): Deployment project name.
             pr_number (int): Pull request number associated with the deployment.
-        
+
         Returns:
             The enqueued deployment result.
         """
@@ -1001,7 +1001,7 @@ class LifecycleRegressionTests(unittest.TestCase):
         def finish_build(*_args, **_kwargs):
             """
             Request cancellation of the deployment and report that the candidate is ready.
-            
+
             Returns:
                 tuple: A zero status code and the message ``"candidate ready\n"``.
             """
