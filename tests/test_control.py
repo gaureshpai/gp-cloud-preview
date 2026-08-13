@@ -881,10 +881,10 @@ class LifecycleRegressionTests(unittest.TestCase):
         Create a successful completed subprocess result with the specified standard output.
         
         Parameters:
-        	stdout (str): Standard output to include in the result.
+            stdout (str): Standard output to include in the result.
         
         Returns:
-        	subprocess.CompletedProcess: A completed process result with return code 0.
+            subprocess.CompletedProcess: A completed process result with return code 0.
         """
         return subprocess.CompletedProcess([], 0, stdout=stdout)
 
@@ -893,12 +893,12 @@ class LifecycleRegressionTests(unittest.TestCase):
         Create a test deployment for the configured repository, project, and pull request.
         
         Parameters:
-        	sha (str): Value used to construct the commit identifier.
-        	project (str): Deployment project name.
-        	pr_number (int): Pull request number associated with the deployment.
+            sha (str): Value used to construct the commit identifier.
+            project (str): Deployment project name.
+            pr_number (int): Pull request number associated with the deployment.
         
         Returns:
-        	The enqueued deployment result.
+            The enqueued deployment result.
         """
         return control.enqueue(
             {
@@ -1003,7 +1003,7 @@ class LifecycleRegressionTests(unittest.TestCase):
             Request cancellation of the deployment and report that the candidate is ready.
             
             Returns:
-            	tuple: A zero status code and the message ``"candidate ready\n"``.
+                tuple: A zero status code and the message ``"candidate ready\n"``.
             """
             control.request_stop(deployment["id"])
             return 0, "candidate ready\n"
