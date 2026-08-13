@@ -90,7 +90,7 @@ class ControlContractTests(unittest.TestCase):
                 patch.object(control, "DATA", root / "data"),
                 patch.object(control, "DEPLOYMENTS", root / "deployments"),
             ):
-                control.atomic_route_text(route, "route\n")
+                control.atomic_route_text(route.parent, route.name, "route\n")
             self.assertEqual(route.stat().st_mode & 0o777, 0o600)
 
     def test_github_api_json_rejects_untrusted_hosts(self):

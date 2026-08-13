@@ -193,7 +193,7 @@ def save_settings(value: dict) -> dict:
         "delete_on_pull_request_close": bool(value.get("delete_on_pull_request_close", True)),
         "projects": value.get("projects") if isinstance(value.get("projects"), dict) else {},
     }
-    atomic_json(SETTINGS_FILE, allowed)
+    atomic_json(SETTINGS_FILE.parent, SETTINGS_FILE.name, allowed)
     return allowed
 
 
@@ -276,68 +276,57 @@ def validate_vault_path(value: object) -> str:
     return path
 
 
-def managed_path(path: Path) -> Path:
-    """Return a canonical path only when it stays inside GP Cloud storage."""
-    resolved = path.resolve(strict=False)
-    roots = (
-        DATA.resolve(strict=False),
-        DEPLOYMENTS.resolve(strict=False),
-        (ROOT / "config" / "caddy" / "routes").resolve(strict=False),
-    )
-    if not any(resolved.is_relative_to(root) for root in roots):
-        raise ValueError("path is outside managed GP Cloud storage")
-    return resolved
+def safe_filename(filename: str) -> str:
+    """Accept only one ordinary filename without path separators or dot segments."""
+    match = re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,254}", filename)
+    if match is None or match.group(0) in {".", ".."}:
+        raise ValueError("invalid managed filename")
+    return match.group(0)
 
 
-def atomic_json(path: Path, value: dict) -> None:
+def atomic_json(directory: Path, filename: str, value: dict) -> None:
     """Replace a JSON file atomically so readers never see partial state."""
-    safe_path = managed_path(path)
-    safe_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(prefix=f".{safe_path.name}.", dir=safe_path.parent)
+    safe_name = safe_filename(filename)
+    directory.mkdir(parents=True, exist_ok=True)
+    destination = directory / safe_name
+    fd, name = tempfile.mkstemp(prefix=f".{safe_name}.", dir=directory)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(value, handle, indent=2, sort_keys=True)
             handle.write("\n")
-        os.replace(name, safe_path)
+        os.replace(name, destination)
     finally:
         if os.path.exists(name):
             os.unlink(name)
 
 
-def atomic_text(path: Path, value: str) -> None:
+def atomic_text(directory: Path, filename: str, value: str) -> None:
     """
     Atomically replace a local text file with the specified content.
     
     Parameters:
-        path (Path): Destination file path.
+        directory (Path): Managed destination directory.
+        filename (str): Validated destination filename.
         value (str): Text to write.
         mode (int): File permission mode for the replacement file.
     """
-    safe_path = managed_path(path)
-    safe_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(prefix=f".{safe_path.name}.", dir=safe_path.parent)
+    safe_name = safe_filename(filename)
+    directory.mkdir(parents=True, exist_ok=True)
+    destination = directory / safe_name
+    fd, name = tempfile.mkstemp(prefix=f".{safe_name}.", dir=directory)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(value)
         os.chmod(name, 0o600)
-        os.replace(name, safe_path)
+        os.replace(name, destination)
     finally:
         if os.path.exists(name):
             os.unlink(name)
 
 
-def atomic_route_text(path: Path, value: str) -> None:
+def atomic_route_text(directory: Path, filename: str, value: str) -> None:
     """Replace a routing file atomically with owner-only permissions."""
-    safe_path = managed_path(path)
-    safe_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(prefix=f".{safe_path.name}.", dir=safe_path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(value)
-        os.replace(name, safe_path)
-    finally:
-        if os.path.exists(name):
-            os.unlink(name)
+    atomic_text(directory, filename, value)
 
 
 def state_path(deployment_id: str) -> Path:
@@ -385,7 +374,7 @@ def write_preview(preview: dict) -> None:
     """Atomically persist a preview and its current-deployment pointer."""
     preview["updated_at"] = now()
     with LOCK:
-        atomic_json(preview_path(str(preview["id"])), preview)
+        atomic_json(PREVIEW_DIR, f"{preview['id']}.json", preview)
 
 
 def read_state(deployment_id: str) -> dict | None:
@@ -407,14 +396,18 @@ def deployment_failure_count() -> int:
 
 def record_deployment_failure() -> None:
     """Persist one failure event for time-windowed monitoring."""
-    atomic_json(FAILURE_COUNTER_FILE, {"count": deployment_failure_count() + 1})
+    atomic_json(
+        FAILURE_COUNTER_FILE.parent,
+        FAILURE_COUNTER_FILE.name,
+        {"count": deployment_failure_count() + 1},
+    )
 
 
 def write_state(state: dict) -> None:
     """Stamp and atomically persist a deployment state under the process lock."""
     state["updated_at"] = now()
     with LOCK:
-        atomic_json(state_path(state["id"]), state)
+        atomic_json(STATE_DIR, f"{state['id']}.json", state)
 
 
 def update_state(deployment_id: str, **changes: object) -> dict | None:
@@ -484,9 +477,12 @@ def queue_operation(action: str, deployment_id: str) -> None:
     safe_action = action
     safe_deployment_id = deployment_match.group(0)
     QUEUE_DIR.mkdir(parents=True, exist_ok=True)
-    marker = managed_path(QUEUE_DIR / f"{safe_deployment_id}.{safe_action}")
+    marker_name = safe_filename(f"{safe_deployment_id}.{safe_action}")
+    marker = QUEUE_DIR / marker_name
+    if marker.is_symlink():
+        raise ValueError("invalid worker operation path")
     if not marker.exists():
-        atomic_text(marker, f"{safe_action}\n")
+        atomic_text(QUEUE_DIR, marker_name, f"{safe_action}\n")
     JOBS.put((safe_action, safe_deployment_id))
 
 
@@ -968,7 +964,7 @@ def save_host_config(values: object) -> dict:
     for name, value in updates.items():
         if name not in seen:
             output.append(f"{name}={value}")
-    atomic_text(path, "\n".join(output).rstrip() + "\n")
+    atomic_text(path.parent, path.name, "\n".join(output).rstrip() + "\n")
     return host_config_summary()
 
 
@@ -1313,8 +1309,8 @@ def materialize_generic_profile(source_dir: Path, state: dict) -> None:
     (source_dir / "Dockerfile").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def github_api_json(url: str) -> dict:
-    """Fetch public GitHub JSON with a short timeout and no bearer credential."""
+def trusted_github_url(url: str) -> str:
+    """Normalize a GitHub API URL after enforcing the fixed trusted origin."""
     parsed = urllib.parse.urlparse(url)
     if (
         parsed.scheme != "https"
@@ -1324,9 +1320,14 @@ def github_api_json(url: str) -> dict:
         or parsed.port
     ):
         raise ValueError("GitHub API URL must use the trusted HTTPS host")
-    safe_url = urllib.parse.urlunparse(
+    return urllib.parse.urlunparse(
         ("https", "api.github.com", parsed.path, "", parsed.query, "")
     )
+
+
+def github_api_json(url: str) -> dict:
+    """Fetch public GitHub JSON with a short timeout and no bearer credential."""
+    safe_url = trusted_github_url(url)
     headers = {"Accept": "application/vnd.github+json", "User-Agent": "gp-cloud"}
     token = GITHUB_TOKEN or installation_token()
     if token:
@@ -1354,7 +1355,7 @@ def github_api_json_with_token(url: str, token: str) -> dict:
         ValueError: If GitHub returns a JSON value that is not an object
     """
     request = urllib.request.Request(
-        url,
+        trusted_github_url(url),
         headers={
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {token}",
@@ -1550,7 +1551,9 @@ def activate_route(state: dict) -> None:
         raise RuntimeError("deployment metadata contains an invalid host port")
     path = route_path(state)
     previous = path.read_text(encoding="utf-8") if path.exists() else None
-    atomic_route_text(path, render_route(state, host_port))
+    route_directory = ROOT / "config" / "caddy" / "routes"
+    route_filename = safe_filename(f"{state['preview_slug']}.caddy")
+    atomic_route_text(route_directory, route_filename, render_route(state, host_port))
     try:
         active = CADDY_MANAGED_MARKER.is_file() and (
             subprocess.run(  # noqa: S603, S607
@@ -1580,7 +1583,7 @@ def activate_route(state: dict) -> None:
         if previous is None:
             path.unlink(missing_ok=True)
         else:
-            atomic_route_text(path, previous)
+            atomic_route_text(route_directory, route_filename, previous)
         raise
 
 
