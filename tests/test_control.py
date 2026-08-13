@@ -68,6 +68,25 @@ class ControlContractTests(unittest.TestCase):
         self.assertNotIn("clone_token_file", value)
         self.assertNotIn("action_token_hash", value)
 
+    def test_queue_marker_rejects_symlinked_marker_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue_dir = root / "queue"
+            outside = root / "outside"
+            queue_dir.mkdir()
+            outside.mkdir()
+            marker = queue_dir / "dep_1_deadbeef.deploy"
+            marker.symlink_to(outside / marker.name)
+            with patch.object(control, "QUEUE_DIR", queue_dir):
+                with self.assertRaisesRegex(ValueError, "worker operation path"):
+                    control.queue_operation("deploy", "dep_1_deadbeef")
+
+    def test_route_files_are_owner_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            route = Path(directory) / "preview.caddy"
+            control.atomic_route_text(route, "route\n")
+            self.assertEqual(route.stat().st_mode & 0o777, 0o600)
+
     def test_next_profile_materializes_a_static_runtime(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)

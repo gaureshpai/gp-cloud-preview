@@ -19,6 +19,7 @@ if command -v caddy >/dev/null; then
     echo "caddy/Caddyfile is not formatted; run caddy fmt --overwrite caddy/Caddyfile" >&2
     exit 1
   }
+  caddy adapt --config caddy/Caddyfile --adapter caddyfile --validate >/dev/null
 fi
 if command -v promtool >/dev/null; then
   promtool check config --syntax-only monitoring/prometheus.yml

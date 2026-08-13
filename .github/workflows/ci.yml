@@ -30,7 +30,10 @@ jobs:
         run: |
           python3 -m pip install --disable-pip-version-check ruff==0.12.8
           sudo apt-get update
-          sudo apt-get install --yes caddy prometheus shellcheck
+          sudo apt-get install --yes caddy golang-go prometheus shellcheck
+          go install github.com/caddyserver/xcaddy/cmd/xcaddy@v0.4.4
+          "$HOME/go/bin/xcaddy" build --output "$RUNNER_TEMP/caddy" --with github.com/caddy-dns/cloudflare
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
           command -v caddy
           command -v promtool
           command -v shellcheck

@@ -22,8 +22,8 @@ docstring-code-format = true
 select = ["E", "F", "I", "B", "S", "UP"]
 ignore = [
     "S101", # unittest assertions are intentional
-    "S603", # subprocess argument lists are validated and never use shell=True
-    "S607", # host commands intentionally resolve through the service PATH
-    "S310", # URL schemes are validated at ingress or fixed to trusted services
     "E501", # embedded generated Dockerfiles and dashboard assets are intentionally compact
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*.py" = ["S310", "S603", "S607"]

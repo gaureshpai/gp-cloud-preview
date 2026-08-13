@@ -221,7 +221,7 @@ def vault_request(method: str, path: str, payload: dict | None = None) -> dict:
         headers={"X-Vault-Token": vault_token(), "Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=10) as response:
+        with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310
             result = json.load(response)
     except urllib.error.HTTPError as error:
         raise RuntimeError(f"Vault request failed with HTTP {error.code}") from error
@@ -312,13 +312,12 @@ def atomic_text(path: Path, value: str) -> None:
 
 
 def atomic_route_text(path: Path, value: str) -> None:
-    """Replace a group-readable routing file with a fixed safe permission."""
+    """Replace a routing file atomically with owner-only permissions."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(value)
-        os.chmod(name, 0o640)
         os.replace(name, path)
     finally:
         if os.path.exists(name):
@@ -460,17 +459,23 @@ def queue_operation(action: str, deployment_id: str) -> None:
     Raises:
         ValueError: If the operation or deployment identifier is invalid.
     """
-    if action not in {"deploy", "stop", "cleanup"} or not re.fullmatch(
-        r"dep_[0-9]+_[0-9a-f]+", deployment_id
-    ):
+    deployment_match = re.fullmatch(r"dep_[0-9]+_[0-9a-f]+", deployment_id)
+    if action not in {"deploy", "stop", "cleanup"} or deployment_match is None:
         raise ValueError("invalid worker operation")
+    safe_action = action
+    safe_deployment_id = deployment_match.group(0)
     QUEUE_DIR.mkdir(parents=True, exist_ok=True)
-    marker = QUEUE_DIR / f"{deployment_id}.{action}"
-    if marker.parent != QUEUE_DIR or marker.name != f"{deployment_id}.{action}":
+    marker = QUEUE_DIR / f"{safe_deployment_id}.{safe_action}"
+    queue_dir_resolved = QUEUE_DIR.resolve(strict=False)
+    marker_resolved = marker.resolve(strict=False)
+    if (
+        marker_resolved.parent != queue_dir_resolved
+        or marker.name != f"{safe_deployment_id}.{safe_action}"
+    ):
         raise ValueError("invalid worker operation path")
     if not marker.exists():
-        atomic_text(marker, f"{action}\n")
-    JOBS.put((action, deployment_id))
+        atomic_text(marker, f"{safe_action}\n")
+    JOBS.put((safe_action, safe_deployment_id))
 
 
 def repo_name(payload: dict) -> str:
@@ -983,7 +988,7 @@ def usage_metrics() -> dict:
         states[status] = states.get(status, 0) + 1
     containers: list[dict[str, str]] = []
     try:
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: S603, S607
             [
                 "docker",
                 "stats",
@@ -1303,7 +1308,7 @@ def github_api_json(url: str) -> dict:
     if token:
         headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=20) as response:
+    with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310
         value = json.load(response)
     if not isinstance(value, dict):
         raise ValueError("GitHub API returned a non-object response")
@@ -1332,7 +1337,7 @@ def github_api_json_with_token(url: str, token: str) -> dict:
             "User-Agent": "gp-cloud-github-action",
         },
     )
-    with urllib.request.urlopen(request, timeout=20) as response:
+    with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310
         value = json.load(response)
     if not isinstance(value, dict):
         raise ValueError("GitHub API returned a non-object response")
@@ -1389,7 +1394,7 @@ def github_api_write(method: str, url: str, payload: dict) -> dict:
             "User-Agent": "gp-cloud",
         },
     )
-    with urllib.request.urlopen(request, timeout=20) as response:
+    with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310
         value = json.load(response)
     return value if isinstance(value, dict) else {}
 
@@ -1458,7 +1463,7 @@ def installation_token() -> str:
     with tempfile.NamedTemporaryFile() as source, tempfile.NamedTemporaryFile() as signature:
         source.write(unsigned)
         source.flush()
-        subprocess.run(
+        subprocess.run(  # noqa: S603, S607
             [
                 "openssl",
                 "dgst",
@@ -1483,7 +1488,7 @@ def installation_token() -> str:
         },
         data=b"{}",
     )
-    with urllib.request.urlopen(request, timeout=20) as response:
+    with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310
         return str(json.load(response)["token"])
 
 
@@ -1524,7 +1529,7 @@ def activate_route(state: dict) -> None:
     atomic_route_text(path, render_route(state, host_port))
     try:
         active = CADDY_MANAGED_MARKER.is_file() and (
-            subprocess.run(
+            subprocess.run(  # noqa: S603, S607
                 ["systemctl", "is-active", "--quiet", "caddy"],
                 check=False,
                 stdout=subprocess.DEVNULL,
@@ -1533,14 +1538,14 @@ def activate_route(state: dict) -> None:
             == 0
         )
         if active:
-            subprocess.run(
+            subprocess.run(  # noqa: S603, S607
                 ["caddy", "validate", "--config", "/etc/caddy/Caddyfile"],
                 check=True,
                 capture_output=True,
                 text=True,
                 timeout=30,
             )
-            subprocess.run(
+            subprocess.run(  # noqa: S603, S607
                 ["systemctl", "reload", "caddy"],
                 check=True,
                 capture_output=True,
@@ -1566,7 +1571,7 @@ def clean_runtime(state: dict, keep_route: bool) -> subprocess.CompletedProcess[
     ]
     if keep_route:
         command.append("--keep-route")
-    return subprocess.run(
+    return subprocess.run(  # noqa: S603
         command,
         check=False,
         text=True,
@@ -1593,7 +1598,7 @@ def run_worker_command(command: list[str], output_path: Path, timeout: int) -> t
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as output:
-        process = subprocess.Popen(
+        process = subprocess.Popen(  # noqa: S603
             command,
             text=True,
             stdout=output,
@@ -1756,7 +1761,7 @@ def run_deployment(deployment_id: str) -> None:
             )
             netrc.chmod(0o600)
             env["HOME"] = auth_home
-        subprocess.run(
+        subprocess.run(  # noqa: S603, S607
             ["git", "clone", "--no-checkout", clone_url, str(source_dir)],
             check=True,
             text=True,
@@ -1765,7 +1770,7 @@ def run_deployment(deployment_id: str) -> None:
             env=env,
             timeout=120,
         )
-        subprocess.run(
+        subprocess.run(  # noqa: S603, S607
             ["git", "-C", str(source_dir), "fetch", "origin", state["sha"]],
             check=True,
             text=True,
@@ -1774,7 +1779,7 @@ def run_deployment(deployment_id: str) -> None:
             env=env,
             timeout=120,
         )
-        subprocess.run(
+        subprocess.run(  # noqa: S603, S607
             ["git", "-C", str(source_dir), "checkout", "--detach", state["sha"]],
             check=True,
             text=True,
