@@ -3,7 +3,6 @@
 # changing a distribution or operator-owned Prometheus installation.
 set -Eeuo pipefail
 
-[[ "${EUID}" -eq 0 ]] || { echo "run as root" >&2; exit 1; }
 ACTION=${1:-}
 [[ $# -eq 1 && "$ACTION" =~ ^(enable|disable|status|uninstall)$ ]] || {
   echo "Usage: $0 enable|disable|status|uninstall" >&2
@@ -16,11 +15,21 @@ if [[ -n "$TEST_ROOT" && "${GP_CLOUD_TESTING:-}" != "true" ]]; then
   echo "GP_CLOUD_TEST_ROOT is only accepted with GP_CLOUD_TESTING=true" >&2
   exit 2
 fi
+if [[ "${EUID}" -ne 0 && -z "$TEST_ROOT" ]]; then
+  echo "run as root" >&2
+  exit 1
+fi
 CONFIG_DIR="$TEST_ROOT/etc/gp-cloud/monitoring"
 DATA_DIR="$TEST_ROOT/var/lib/gp-cloud-prometheus"
 UNIT="$TEST_ROOT/etc/systemd/system/gp-cloud-prometheus.service"
+INSTALL_USER=root
+INSTALL_GROUP=root
 PROMETHEUS_OWNER=prometheus
-if [[ -n "$TEST_ROOT" ]]; then PROMETHEUS_OWNER=root; fi
+if [[ -n "$TEST_ROOT" ]]; then
+  INSTALL_USER=$(id -u)
+  INSTALL_GROUP=$(id -g)
+  PROMETHEUS_OWNER="$INSTALL_USER"
+fi
 
 case "$ACTION" in
   enable)
@@ -30,14 +39,14 @@ case "$ACTION" in
         exit 1
       }
     done
-    install -d -o root -g root -m 0755 "$CONFIG_DIR"
-    install -d -o root -g root -m 0755 "$(dirname "$UNIT")"
-    install -d -o "$PROMETHEUS_OWNER" -g "$PROMETHEUS_OWNER" -m 0750 "$DATA_DIR"
-    install -o root -g root -m 0644 "$SOURCE_ROOT/monitoring/prometheus.yml" "$CONFIG_DIR/prometheus.yml"
-    install -o root -g root -m 0644 "$SOURCE_ROOT/monitoring/alerts.yml" "$CONFIG_DIR/alerts.yml"
+    install -d -o "$INSTALL_USER" -g "$INSTALL_GROUP" -m 0755 "$CONFIG_DIR"
+    install -d -o "$INSTALL_USER" -g "$INSTALL_GROUP" -m 0755 "$(dirname "$UNIT")"
+    install -d -o "$PROMETHEUS_OWNER" -g "$INSTALL_GROUP" -m 0750 "$DATA_DIR"
+    install -o "$INSTALL_USER" -g "$INSTALL_GROUP" -m 0644 "$SOURCE_ROOT/monitoring/prometheus.yml" "$CONFIG_DIR/prometheus.yml"
+    install -o "$INSTALL_USER" -g "$INSTALL_GROUP" -m 0644 "$SOURCE_ROOT/monitoring/alerts.yml" "$CONFIG_DIR/alerts.yml"
     promtool check config "$CONFIG_DIR/prometheus.yml"
     promtool check rules "$CONFIG_DIR/alerts.yml"
-    install -o root -g root -m 0644 "$SOURCE_ROOT/monitoring/gp-cloud-prometheus.service" "$UNIT"
+    install -o "$INSTALL_USER" -g "$INSTALL_GROUP" -m 0644 "$SOURCE_ROOT/monitoring/gp-cloud-prometheus.service" "$UNIT"
     systemctl daemon-reload
     systemctl enable --now gp-cloud-prometheus.service
     ;;

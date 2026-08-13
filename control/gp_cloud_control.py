@@ -146,6 +146,10 @@ class DeploymentStopRequested(RuntimeError):
     """Signal that a candidate must stop without being recorded as a failure."""
 
 
+class DeploymentQueueFull(RuntimeError):
+    """Signal that the durable deployment queue is at its configured limit."""
+
+
 def now() -> str:
     """Return an ISO-8601 UTC timestamp for persisted state and logs."""
     return datetime.now(UTC).isoformat()
@@ -251,8 +255,8 @@ def validate_vault_path(value: object) -> str:
     # operator-owned namespace after Vault or a proxy normalizes the path.
     if any(part in {".", ".."} for part in path.split("/")):
         raise ValueError("invalid Vault path")
-    prefix_root = VAULT_PATH_PREFIX.rstrip("/")
-    if path != prefix_root and not path.startswith(VAULT_PATH_PREFIX):
+    prefix_root = VAULT_PATH_PREFIX.strip("/")
+    if path != prefix_root and not path.startswith(f"{prefix_root}/"):
         raise ValueError(f"Vault path must be below {VAULT_PATH_PREFIX}")
     return path
 
@@ -271,14 +275,28 @@ def atomic_json(path: Path, value: dict) -> None:
             os.unlink(name)
 
 
-def atomic_text(path: Path, value: str, mode: int = 0o600) -> None:
+def atomic_text(path: Path, value: str) -> None:
     """Replace one local configuration file without exposing partial writes."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(value)
-        os.chmod(name, mode)
+        os.chmod(name, 0o600)
+        os.replace(name, path)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
+def atomic_route_text(path: Path, value: str) -> None:
+    """Replace a group-readable routing file with a fixed safe permission."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(value)
+        os.chmod(name, 0o640)
         os.replace(name, path)
     finally:
         if os.path.exists(name):
@@ -387,9 +405,11 @@ def queue_operation(action: str, deployment_id: str) -> None:
         raise ValueError("invalid worker operation")
     QUEUE_DIR.mkdir(parents=True, exist_ok=True)
     marker = QUEUE_DIR / f"{deployment_id}.{action}"
+    if marker.parent != QUEUE_DIR or marker.name != f"{deployment_id}.{action}":
+        raise ValueError("invalid worker operation path")
     if not marker.exists():
         atomic_text(marker, f"{action}\n")
-        JOBS.put((action, deployment_id))
+    JOBS.put((action, deployment_id))
 
 
 def repo_name(payload: dict) -> str:
@@ -409,6 +429,29 @@ def slugify(value: str, max_length: int = 50) -> str:
     if not value:
         raise ValueError("project slug cannot be empty")
     return value[:max_length]
+
+
+def valid_dns_name(value: str) -> bool:
+    """Validate a DNS name using bounded label checks without backtracking regexes."""
+    if not 1 <= len(value) <= 253 or value.endswith("."):
+        return False
+    labels = value.split(".")
+    return len(labels) >= 2 and all(
+        1 <= len(label) <= 63
+        and label[0].isalnum()
+        and label[-1].isalnum()
+        and all(char.isalnum() or char == "-" for char in label)
+        for label in labels
+    ) and 2 <= len(labels[-1]) <= 63 and all(char.isalpha() for char in labels[-1])
+
+
+def valid_repository_name(value: str) -> bool:
+    """Validate one owner/repository entry without a regex over user input."""
+    owner, separator, repository = value.partition("/")
+    allowed = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-")
+    return bool(separator and owner and repository) and all(
+        char in allowed for char in owner + repository
+    )
 
 
 def require_sha(value: object) -> str:
@@ -500,7 +543,7 @@ def normalize_job(body: dict) -> dict:
 def enqueue(body: dict, source: str, clone_token: str = "") -> dict:
     """Create one historical deployment under a stable preview environment."""
     if sum(1 for item in QUEUE_DIR.glob("*.deploy") if item.is_file()) >= MAX_QUEUE_DEPTH:
-        raise RuntimeError("deployment queue is full")
+        raise DeploymentQueueFull("deployment queue is full")
     job = normalize_job(body)
     deployment_id = f"dep_{int(time.time())}_{secrets.token_hex(4)}"
     runtime_slug = slugify(f"{job['preview_slug']}-{deployment_id[-8:]}", 63)
@@ -703,10 +746,18 @@ def validate_host_config_value(name: str, value: str) -> str:
         "GP_CLOUD_COOKIE_SECURE",
         "GP_CLOUD_ALLOW_FORKS",
         "GP_CLOUD_ALLOW_PR_SECRETS",
+        "GP_CLOUD_ALLOW_PR_BUILD_NETWORK",
         "GP_CLOUD_RETAIN_WORKSPACES",
     }:
         if value not in {"true", "false"}:
             raise ValueError(f"{name} must be true or false")
+    elif name == "GP_CLOUD_TRUSTED_AUTHOR_ASSOCIATIONS":
+        allowed_associations = {"OWNER", "MEMBER", "COLLABORATOR"}
+        associations = {item.strip().upper() for item in value.split(",") if item.strip()}
+        if not associations or not associations <= allowed_associations:
+            raise ValueError(
+                "GP_CLOUD_TRUSTED_AUTHOR_ASSOCIATIONS must list OWNER, MEMBER, or COLLABORATOR"
+            )
     elif name == "GP_CLOUD_PUBLIC_SCHEME" and value not in {"http", "https"}:
         raise ValueError("GP_CLOUD_PUBLIC_SCHEME must be http or https")
     elif name in {
@@ -722,15 +773,10 @@ def validate_host_config_value(name: str, value: str) -> str:
     }:
         if not value.isdigit():
             raise ValueError(f"{name} must be a non-negative integer")
-    elif name == "GP_CLOUD_PREVIEW_DOMAIN" and not re.fullmatch(
-        r"(?=.{1,253}$)(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[A-Za-z]{2,63}",
-        value,
-    ):
+    elif name == "GP_CLOUD_PREVIEW_DOMAIN" and not valid_dns_name(value):
         raise ValueError("GP_CLOUD_PREVIEW_DOMAIN must be a DNS name")
     elif name == "GP_CLOUD_ALLOWED_REPOS" and value:
-        if any(
-            not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", item) for item in value.split(",")
-        ):
+        if any(not valid_repository_name(item) for item in value.split(",")):
             raise ValueError("GP_CLOUD_ALLOWED_REPOS must contain owner/repository names")
     elif name == "GP_CLOUD_CPU_LIMIT":
         if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", value) or float(value) <= 0:
@@ -1265,7 +1311,7 @@ def activate_route(state: dict) -> None:
         raise RuntimeError("deployment metadata contains an invalid host port")
     path = route_path(state)
     previous = path.read_text(encoding="utf-8") if path.exists() else None
-    atomic_text(path, render_route(state, host_port), mode=0o640)
+    atomic_route_text(path, render_route(state, host_port))
     try:
         active = CADDY_MANAGED_MARKER.is_file() and (
             subprocess.run(
@@ -1295,7 +1341,7 @@ def activate_route(state: dict) -> None:
         if previous is None:
             path.unlink(missing_ok=True)
         else:
-            atomic_text(path, previous, mode=0o640)
+            atomic_route_text(path, previous)
         raise
 
 
@@ -1727,6 +1773,13 @@ def backfill_expirations() -> None:
 
 def reconcile_durable_state() -> None:
     """Migrate legacy records and rebuild durable work after an interrupted process."""
+    def queue_reconciled(action: str, deployment_id: str) -> None:
+        """Skip one malformed legacy operation without aborting startup recovery."""
+        try:
+            queue_operation(action, deployment_id)
+        except (OSError, ValueError):
+            return
+
     pending_cleanup: set[str] = set()
     for marker in list(QUEUE_DIR.iterdir()):
         modern = re.fullmatch(r"(dep_[0-9]+_[0-9a-f]+)\.(deploy|stop|cleanup)", marker.name)
@@ -1830,15 +1883,15 @@ def reconcile_durable_state() -> None:
                     superseded_at=now(),
                     superseded_by=current["id"] if current else None,
                 )
-                queue_operation("cleanup", state["id"])
+                queue_reconciled("cleanup", state["id"])
             elif state.get("stop_requested"):
-                queue_operation("stop", state["id"])
+                queue_reconciled("stop", state["id"])
             elif state.get("state") == "QUEUED":
-                queue_operation("deploy", state["id"])
+                queue_reconciled("deploy", state["id"])
             elif state.get("state") in TERMINAL_STATES:
                 metadata = DEPLOYMENTS / state["runtime_slug"] / "metadata.json"
                 if metadata.exists():
-                    queue_operation("cleanup", state["id"])
+                    queue_reconciled("cleanup", state["id"])
 
     # Convert pre-operation queue markers after state migration.
     for marker in list(QUEUE_DIR.iterdir()):
@@ -1846,10 +1899,10 @@ def reconcile_durable_state() -> None:
             state = read_state(marker.name)
             marker.unlink(missing_ok=True)
             if state:
-                queue_operation("stop" if state.get("stop_requested") else "deploy", state["id"])
+                queue_reconciled("stop" if state.get("stop_requested") else "deploy", state["id"])
     for deployment_id in pending_cleanup:
         if read_state(deployment_id):
-            queue_operation("cleanup", deployment_id)
+            queue_reconciled("cleanup", deployment_id)
 
 
 def verify_signature(handler: BaseHTTPRequestHandler, body: bytes) -> bool:
@@ -1895,9 +1948,10 @@ def release_webhook_claim(claim: tuple[Path, Path]) -> None:
 
 def parse_deploy_command(comment: str) -> tuple[str, str | None]:
     """Parse only a standalone, lowercase ``/deploy`` command."""
-    if re.fullmatch(r"[ \t]*/deploy[ \t]*", comment):
+    trimmed = comment.strip(" \t")
+    if trimmed == "/deploy":
         return "deploy", None
-    if re.match(r"[ \t]*/deploy(?:[ \t]|\r?$)", comment):
+    if trimmed.startswith("/deploy") and trimmed[7] in " \t":
         return "unsupported", "unsupported command; use exactly /deploy with no arguments"
     return "ignore", None
 
@@ -2455,6 +2509,8 @@ class Handler(BaseHTTPRequestHandler):
                     public_action_state(result) if result else {"error": "deployment not found"},
                 )
             return self.send_json(404, {"error": "not found"})
+        except DeploymentQueueFull as error:
+            self.send_json(503, {"error": str(error)})
         except PermissionError as error:
             self.send_json(403, {"error": str(error)})
         except (ValueError, KeyError, json.JSONDecodeError) as error:

@@ -81,7 +81,7 @@ A monitoring failure must not stop deployments or the control service. See
 ## Incident response
 
 1. Request **Stop all** and watch state converge to `STOPPED`.
-2. Disable Caddy to remove public ingress: `sudo systemctl disable --now caddy`.
+2. Remove GP Cloud public ingress with `sudo ./scripts/gp-cloud-install --disable-public-edge`.
 3. Inspect redacted inventory, GP Cloud journal, per-deployment logs, queue
    markers, containers, and networks.
 4. Rotate API/admin/webhook, GitHub, Vault, and DNS credentials if exposure is
