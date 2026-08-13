@@ -1,200 +1,210 @@
 # GP Cloud Preview
 
-Documentation index: [hosting](docs/HOSTING.md) · [architecture](docs/ARCHITECTURE.md)
-· [operations](docs/OPERATIONS.md) · [security](docs/SECURITY.md) ·
-[local quickstart](docs/LOCAL-QUICKSTART.md) · [contributing](CONTRIBUTING.md)
+GP Cloud Preview is a small, self-hosted pull-request preview control plane.
+It checks out an exact Git commit, builds and health-checks a deployment
+candidate, and publishes the healthy candidate through Caddy. The default
+installation is local-only: the API listens on `127.0.0.1:8787`, GP Cloud does
+not configure or enable Caddy, and the optional monitoring service is not
+enabled.
 
-GP Cloud Preview is a small, self-hostable preview-deployment platform. It
-builds an exact Git commit in an isolated Docker container, checks that the
-container is healthy, publishes it through Caddy, and removes it when a pull
-request closes. It has no application database or AI dependency: the standard-
-library API, built-in dashboard, worker, Docker, Caddy, and Prometheus are
-enough to run it.
+Documentation: [hosting](docs/HOSTING.md) ·
+[local quickstart](docs/LOCAL-QUICKSTART.md) ·
+[architecture](docs/ARCHITECTURE.md) · [operations](docs/OPERATIONS.md) ·
+[security](docs/SECURITY.md) · [monitoring](docs/MONITORING.md) ·
+[contributing](CONTRIBUTING.md)
 
-The platform is useful for ordinary web applications and AI-enabled web
-applications alike. A non-AI app can be a static Vite/Next export or any
-Dockerfile-based HTTP service. An AI app is treated the same way; its model
-provider, local model server, vector store, and secrets stay inside its own
-container/configuration and are never supplied by the control plane.
+## Lifecycle model
 
-## Runtime contract
+A **preview** is the stable environment for a repository pull request (or a
+direct project deployment). A **deployment** is one immutable build attempt.
+A preview retains all deployment history and has at most one current
+deployment.
 
-The harness accepts a local checkout, an exact commit SHA, a deterministic
-deployment slug, an application port, and a health-check path. It builds a
-Dockerfile image, starts it with bounded resources on the `gp-cloud` network,
-waits for an HTTP 200 response, and writes a Caddy route for the preview host.
+- Candidates use deployment-specific workspaces, logs, image tags,
+  containers, and internal Docker networks.
+- A redeploy leaves the current deployment and route running while the
+  candidate builds and passes its health check.
+- Promotion atomically replaces the stable Caddy route. Only then is the old
+  deployment marked `SUPERSEDED` and cleaned.
+- A failed replacement is `FAILED`; it does not supersede or remove a healthy
+  current deployment.
+- Deploy, stop, cleanup, TTL, and pull-request-close requests are serialized by
+  the durable worker. HTTP handlers only enqueue requested transitions.
 
-The control API is bound to `127.0.0.1:8787`. The installer runs in local-only
-mode and disables Caddy; use an SSH tunnel for administration. If you
-intentionally enable Caddy, it can expose the control API and previews through
-the configured domain and HTTP port. Put a TLS proxy or a properly configured
-TLS-aware edge in front of it before allowing access from the Internet.
+Deployment transitions are:
 
-With a secured public edge enabled, open
-`https://control.<GP_CLOUD_PREVIEW_DOMAIN>/` in a browser; it redirects to
-`/ui/login`. In local-only mode, forward `127.0.0.1:8787` over SSH and open
-`http://127.0.0.1:8787/ui` locally.
-The console uses a neutral operator interface and does not expose API tokens to
-the browser. Set `GP_CLOUD_ADMIN_PASSWORD` for a separate UI password; while
-migrating, the API token is accepted as the login password when that value is
-blank.
+```text
+QUEUED -> BUILDING -> RUNNING -> SUPERSEDED
+   |         |           |
+   +---------+-----------+-> STOPPED
+             +--------------> FAILED
+```
 
-Endpoints:
+State is atomic JSON under `/opt/gp-cloud/data/deployments` and
+`/opt/gp-cloud/data/previews`. Durable operation markers are under
+`/opt/gp-cloud/data/queue`.
 
-* `GET /v1/deployments` — browser-readable safe deployment index, reconciled
-  with runtime metadata; use `?state=RUNNING` to filter. Authorization adds
-  repository, SHA, and diagnostic fields.
-* `POST /v1/deployments` — authenticated job creation.
-* `GET /v1/deployments/<id>` — status and immutable SHA metadata.
-* `GET /v1/deployments/<id>/logs` — retained worker logs.
-* `POST /v1/deployments/<id>/stop` — cleanup.
-* `POST /webhooks/github` — HMAC-verified `issue_comment` and `pull_request` events.
-* `GET /healthz` and `/metrics` — local health and Prometheus metrics.
+## GitHub command contract
 
-Preview jobs have a configurable TTL (`GP_CLOUD_DEPLOYMENT_TTL_SECONDS`, one
-day by default) and are stopped when their pull request closes. The cleanup
-worker runs inside the system service, so it does not depend on an open SSH
-session or terminal. Secrets are written to HashiCorp Vault KV v2 and injected
-only at container start through a temporary env file that is removed after the
-container is launched.
+Only a standalone, lowercase `/deploy` comment is accepted. Spaces or tabs
+around the command are allowed. Arguments, multiline commands, prose,
+case variants, quotes, inline code, fenced code, and strings such as
+`/deployment` never deploy. An otherwise standalone `/deploy` with arguments
+returns a usage error.
 
-The worker supports GitHub App installation tokens or `GITHUB_TOKEN` for
-private clones, but every repository must still be explicitly listed in
-`GP_CLOUD_ALLOWED_REPOS`. It performs detached exact-SHA checkout, sequential
-builds, health checks, Caddy route registration, and pull-request cleanup.
+The webhook must be an `issue_comment` `created` event from an author whose
+signed `author_association` is one of `OWNER`, `MEMBER`, or `COLLABORATOR` by
+default. Every request requires HMAC SHA-256 and a unique
+`X-GitHub-Delivery`; delivery IDs are durably deduplicated. Pull-request close
+events request cleanup.
 
-Repositories do not need a gp-cloud configuration file or deployment-specific
-changes. Operators can define project profiles in the dashboard's settings
-JSON or the local configuration workflow. Generic repositories are detected
-from their Dockerfile/lockfiles; build-only files are materialized only inside
-the ephemeral deployment workspace and are never committed back to Git.
+## Endpoints and access boundaries
 
-## Configuration
+The service binds only to loopback. Locally available endpoints include:
 
-Configuration is stored at `/opt/gp-cloud/config/gp-cloud.env`. The dashboard
-shows the live path and non-secret variable inventory, but never returns secret
-values. Runtime application variables belong in Vault and are injected only
-when a deployment starts; paths are restricted to the `gp-cloud/` namespace.
-When a secured public edge is enabled, configure the same webhook secret in
-GitHub and point the webhook to
-`https://control.<your-domain>/webhooks/github`.
+- `GET /healthz` and `GET /metrics`
+- `GET /v1/deployments` (safe fields without authentication; full history and
+  diagnostics with the bearer token)
+- `POST /v1/deployments`, deployment status/logs, and stop requests (bearer
+  token required)
+- `/ui` and `/ui/api/*` (operator session required; mutation requests require
+  JSON and same-origin browser requests)
+- `POST /webhooks/github` (GitHub HMAC, event, actor, and replay checks)
+- `/actions/gp-cloud-deploy*` (repository-scoped GitHub Action token)
 
-## Security baseline
+Public Caddy mode uses separate host policies:
 
-Deployed containers receive no Docker socket, no host filesystem mounts, no
-privileged mode, and no access to existing Docker networks. They are limited
-to one CPU, 768 MiB, and 256 PIDs by default. The systemd service writes only
-GP Cloud state/workspace/log/route folders, while `/root`, `/home`, and other
-host folders are inaccessible. The safe deployment index is public while
-mutation and diagnostics remain authenticated.
+- `webhook.<domain>` exposes only `POST /webhooks/github`;
+- `actions.<domain>` exposes only the GitHub Action endpoints;
+- `control.<domain>` exposes only `/` and `/ui*`;
+- preview hostnames expose only their application;
+- `/v1`, `/metrics`, `/healthz`, and internal/admin paths remain loopback-only.
 
-Prometheus and Node Exporter run as host services. Grafana runs as
-`gp-cloud-grafana`, bound to loopback port 3000 for SSH-tunnel access; it is
-not attached to the deployed-app network.
+No permissive CORS headers are returned.
 
-## Self-hosting: end-to-end setup
+## Install
 
-The supported target is a dedicated Debian 12 or Ubuntu 24.04 VM with a public
-IPv4 address. Use a separate host for production workloads; preview builds are
-untrusted application code even though their runtime containers are restricted.
+The supported host is Debian 12 or Ubuntu 24.04 with Python 3.11 or newer,
+Docker Engine and its Buildx plugin, Git, curl, Caddy, and systemd.
 
-1. Install Docker Engine, Git, curl, Caddy, and systemd-managed Prometheus and
-   Node Exporter. For the default local-only mode, do not open application or
-   dashboard ports publicly. For intentional public hosting, point a domain
-   you control at the secured edge; wildcard DNS is recommended so
-   `*.your-domain` resolves to the same edge.
+```sh
+sudo ./scripts/gp-cloud-install
+sudoedit /opt/gp-cloud/config/gp-cloud.env
+sudo systemctl restart gp-cloud.service
+curl http://127.0.0.1:8787/healthz
+```
 
-2. Copy this directory to the VM and run the installer as root:
+The base installer does not generate credentials, alter Prometheus, or touch
+an operator-owned Caddy service. Access the dashboard locally or through an
+SSH tunnel:
 
-   ```sh
-   sudo ./scripts/gp-cloud-install
-   ```
+```sh
+ssh -L 8787:127.0.0.1:8787 user@host
+```
 
-   The installer creates `/opt/gp-cloud`, the private Docker network, the
-   system unit, and the Caddy environment drop-in. It does not invent secrets.
+Then open `http://127.0.0.1:8787/ui`.
 
-3. Edit `/opt/gp-cloud/config/gp-cloud.env`:
+## Optional wildcard HTTPS
 
-   ```dotenv
-   GP_CLOUD_PREVIEW_DOMAIN=preview.example.com
-   GP_CLOUD_API_TOKEN=<openssl rand -hex 32>
-   GP_CLOUD_GITHUB_WEBHOOK_SECRET=<openssl rand -hex 32>
-   GP_CLOUD_ALLOWED_REPOS=owner/non-ai-site,owner/ai-site
-   ```
+Public mode uses a DNS-01 wildcard certificate managed and renewed by Caddy.
+The bundled configuration expects a Caddy build with
+`github.com/caddy-dns/cloudflare` and a Cloudflare token limited to DNS edits
+for the preview zone. Configure wildcard DNS (`*.preview.example.com`) and set
+these values in `gp-cloud.env`:
 
-   For private repositories, set `GITHUB_TOKEN`, or configure the GitHub App
-   ID, installation ID, and private-key file. These credentials do not replace
-   the repository allowlist. Keep this file mode `0600`.
+```dotenv
+GP_CLOUD_PREVIEW_DOMAIN=preview.example.com
+GP_CLOUD_PUBLIC_SCHEME=https
+GP_CLOUD_HTTP_PORT=443
+GP_CLOUD_COOKIE_SECURE=true
+```
 
-4. Start and verify the local service:
+Set edge-only values in `/opt/gp-cloud/config/caddy.env`:
 
-   ```sh
-   sudo systemctl restart gp-cloud.service
-   curl http://127.0.0.1:8787/healthz
-   sudo journalctl -u gp-cloud.service -f
-   ```
+```dotenv
+GP_CLOUD_PREVIEW_DOMAIN=preview.example.com
+GP_CLOUD_CONTROL_PORT=8787
+GP_CLOUD_CADDY_ACME_EMAIL=operator@example.com
+GP_CLOUD_CLOUDFLARE_API_TOKEN=<zone-limited-token>
+```
 
-   Caddy is installed and validated but disabled by default. The bundled
-   Caddyfile is HTTP-only; only enable it after configuring DNS, TLS termination
-   at an edge proxy, firewall rules, and an explicit public-edge policy.
+Then rerun:
 
-5. Configure a GitHub webhook for each allowlisted repository. Use
-   `https://control.<your-domain>/webhooks/github`, content type
-   `application/json`, the exact `GP_CLOUD_GITHUB_WEBHOOK_SECRET`, and enable
-   `issue_comment` and `pull_request`. Comment `/deploy` on a pull request to
-   create a preview; closing the pull request removes its container and route.
+```sh
+sudo ./scripts/gp-cloud-install --enable-public-edge
+sudo systemctl is-active caddy
+```
 
-6. For a direct API deployment, use a full 40-character commit SHA:
+The installer starts Caddy when it is stopped and reloads it when it is
+already running, so the new public-edge configuration is applied immediately.
 
-   ```sh
-   set -a; . /opt/gp-cloud/config/gp-cloud.env; set +a
-   curl -X POST https://control.<your-domain>/v1/deployments \
-     -H "Authorization: Bearer $GP_CLOUD_API_TOKEN" \
-     -H 'Content-Type: application/json' \
-     -d '{"repo_url":"https://github.com/owner/site.git","sha":"<full-sha>","project":"site","app_port":2222,"health_path":"/","vault_path":"gp-cloud/projects/site"}'
-   ```
+To stop a GP Cloud-managed public edge without deleting its retained
+configuration and backups, run
+`sudo ./scripts/gp-cloud-install --disable-public-edge`. The installer refuses
+to disable an unmarked operator-owned Caddy service.
 
-   Poll the returned `id` with `GET /v1/deployments/<id>` and inspect
-   `GET /v1/deployments/<id>/logs` when a build fails. Stop it with
-   `POST /v1/deployments/<id>/stop`.
+HTTP wildcard requests redirect to HTTPS. Validate certificate issuance,
+renewal, hostname routing, and the public route matrix with the commands in
+[HOSTING.md](docs/HOSTING.md). Do not put the DNS token in the general
+application environment or repository.
 
-7. Validate monitoring at `http://127.0.0.1:8787/metrics` and
-   `http://127.0.0.1:9090`. Keep those ports loopback-only. Add the supplied
-   Prometheus files under `/etc/prometheus` if Prometheus is enabled, then
-   restart Prometheus. Grafana can be reached safely with an SSH tunnel.
+## Optional monitoring
 
-## Build profiles
+Monitoring is off by default and is never required by the control plane or
+worker. The dedicated service uses `127.0.0.1:9091` so it can coexist with a
+distribution Prometheus on its usual 9090. To install it:
 
-For a project, either commit a Dockerfile that listens on the requested
-port or use a detected `uv`, Python `requirements.txt`, npm lockfile, or pnpm
-lockfile project with a configured `start_command`. The generated files exist
-only in the ephemeral source workspace and are never pushed to the repository.
+```sh
+sudo ./scripts/gp-cloud-install --enable-monitoring
+# or later:
+sudo /opt/gp-cloud/worker/gp-cloud-monitoring enable
+```
 
-## Security and operating notes
+See [MONITORING.md](docs/MONITORING.md) for health checks, failure semantics,
+disable, and uninstall behavior.
 
-The API binds to loopback. When enabled, Caddy is the public edge; otherwise
-there is no public GP Cloud listener. The safe deployment index and health
-endpoint are public at the edge, while deployment mutation, detailed status,
-logs, and Vault writes require authentication. GitHub webhooks require HMAC
-SHA-256. Runtime
-containers have no Docker socket, host mounts, privileged mode, or access to
-existing Docker networks, and receive CPU, memory, PID, read-only-root, and
-`no-new-privileges` limits. The worker also removes a failed container and
-route, preventing orphaned workloads after a build or health-check failure.
+## Isolation and security
 
-The service is intentionally sequential. This makes host capacity predictable;
-increase it only after adding queue limits, disk cleanup, and per-tenant
-resource accounting.
-The live configuration and runtime files are intentionally outside this
-checkout so credentials do not appear in VS Code, Git, or pull requests. Open
-`/opt/gp-cloud` as a separate folder in VS Code on the deployment VM to inspect
-metadata, routes, logs, and retained workspaces. Run `scripts/gp-cloud-inspect`
-for a redacted inventory without printing secrets. Build source is deleted by
-default after deployment; enable `GP_CLOUD_RETAIN_WORKSPACES=true` temporarily
-when debugging a build.
+Runtime containers have no Docker socket or host mounts. They use unique
+internal networks, loopback-only published ports, read-only root filesystems,
+all capabilities dropped, `no-new-privileges`, CPU/memory/PID/ulimit bounds,
+and bounded local Docker logs. Build and runtime artifacts cannot collide
+between deployment attempts.
 
-The system unit uses `ProtectSystem=strict`, `ProtectHome=true`, and explicit
-write paths limited to GP Cloud state folders plus `/tmp`. The worker never passes
-the host filesystem or Docker socket into a deployed app. Keep GitHub private
-keys and Vault token files under `/opt/gp-cloud` because `/root`, `/home`, and
-other host user directories are intentionally inaccessible to the service.
+Builds require Docker Buildx and use a unique ephemeral docker-container
+builder with configurable memory/CPU bounds (`GP_CLOUD_BUILD_MEMORY_LIMIT` and
+`GP_CLOUD_BUILD_CPU_QUOTA`), no shared cache reuse, and build-step networking
+disabled by default. A trusted direct deployment may use a canonical repository
+profile with `allow_build_network: true`. PR builds additionally require the
+host-wide `GP_CLOUD_ALLOW_PR_BUILD_NETWORK=true`; keep it false for hostile PR
+source. This double opt-in permits normal Docker egress. Images declaring
+`VOLUME` are rejected so anonymous writable volumes cannot bypass runtime
+storage bounds.
+
+Untrusted Dockerfile builds still execute through the host Docker daemon. This
+is not a hostile multi-tenant sandbox. Use a dedicated VM and move builds to a
+rootless, isolated builder or per-job VM before accepting untrusted public
+contributors. Read [SECURITY.md](docs/SECURITY.md) before enabling a public
+edge.
+
+Application runtime secrets are read from an operator-limited Vault KV v2 path
+below `gp-cloud/`, written to a temporary mode-0600 env file, and deleted after
+container start. Pull-request deployments receive none by default. PR secrets
+require a canonical `owner/repository` profile with `allow_pr_secrets: true`
+and the host-wide `GP_CLOUD_ALLOW_PR_SECRETS=true`; use only disposable preview
+credentials. Docker retains container environment values for the runtime
+lifetime, so host-root/Docker-daemon access remains trusted.
+
+## Development
+
+Run the complete local quality contract with:
+
+```sh
+./scripts/check
+```
+
+It runs unit/integration tests, compilation, Ruff lint/format, shell syntax and
+ShellCheck, Prometheus validation when available, Caddy formatting, and Git
+whitespace checks. CI pins Python 3.11 and installs Caddy, Prometheus tools,
+ShellCheck, and pinned Ruff before running the same entrypoint with
+least-privilege workflow permissions.

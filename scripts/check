@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Run the same deterministic checks used by CI.
+set -Eeuo pipefail
+
+python3 -m unittest discover -s tests -v
+python3 -m compileall -q control tests
+ruff check control tests
+ruff format --check control tests
+bash -n scripts/gp-cloud-clean scripts/gp-cloud-deploy scripts/gp-cloud-inspect \
+  scripts/gp-cloud-install scripts/gp-cloud-monitoring scripts/gp-cloud-tls-smoke scripts/check
+shellcheck scripts/gp-cloud-clean scripts/gp-cloud-deploy scripts/gp-cloud-inspect \
+  scripts/gp-cloud-install scripts/gp-cloud-monitoring scripts/gp-cloud-tls-smoke scripts/check
+
+if command -v caddy >/dev/null; then
+  CHECK_FORMATTED=$(mktemp)
+  CHECK_ROUTES=$(mktemp -d)
+  trap 'rm -f "$CHECK_FORMATTED"; rmdir "$CHECK_ROUTES"' EXIT
+  export GP_CLOUD_CADDY_ACME_EMAIL=${GP_CLOUD_CADDY_ACME_EMAIL:-check@example.com}
+  export GP_CLOUD_CLOUDFLARE_API_TOKEN=${GP_CLOUD_CLOUDFLARE_API_TOKEN:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
+  export GP_CLOUD_CONTROL_PORT=${GP_CLOUD_CONTROL_PORT:-8787}
+  export GP_CLOUD_PREVIEW_DOMAIN=${GP_CLOUD_PREVIEW_DOMAIN:-preview.example.com}
+  export GP_CLOUD_CADDY_ROUTES_DIR="$CHECK_ROUTES"
+  caddy fmt caddy/Caddyfile > "$CHECK_FORMATTED"
+  cmp -s caddy/Caddyfile "$CHECK_FORMATTED" || {
+    echo "caddy/Caddyfile is not formatted; run caddy fmt --overwrite caddy/Caddyfile" >&2
+    exit 1
+  }
+  caddy adapt --config caddy/Caddyfile --adapter caddyfile --validate >/dev/null
+fi
+if command -v promtool >/dev/null; then
+  promtool check config --syntax-only monitoring/prometheus.yml
+  promtool check rules monitoring/alerts.yml
+fi
+
+git diff --check
+if [[ -n "${GITHUB_BASE_REF:-}" ]]; then
+  git diff --check "origin/${GITHUB_BASE_REF}...HEAD"
+fi

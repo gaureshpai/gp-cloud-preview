@@ -1,6 +1,6 @@
 [tool.ruff]
 # Keep formatting deterministic across local development and CI.
-target-version = "py312"
+target-version = "py311"
 line-length = 100
 exclude = [
     ".git",
@@ -17,3 +17,13 @@ indent-style = "space"
 line-ending = "lf"
 skip-magic-trailing-comma = false
 docstring-code-format = true
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "S", "UP"]
+ignore = [
+    "S101", # unittest assertions are intentional
+    "E501", # embedded generated Dockerfiles and dashboard assets are intentionally compact
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*.py" = ["S310", "S603", "S607"]

@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+# Verify the externally visible wildcard TLS and ingress-denial contract without
+# authenticating or changing deployment state.
+set -Eeuo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: gp-cloud-tls-smoke DOMAIN [--resolve ADDRESS] [--min-valid-days DAYS]
+
+Examples:
+  ./scripts/gp-cloud-tls-smoke preview.example.com
+  ./scripts/gp-cloud-tls-smoke preview.example.com --resolve 203.0.113.10
+
+--resolve sends all probes to one IPv4/IPv6 address while retaining the
+hostname for TLS SNI and certificate verification. Run this script from a
+machine outside the preview host's private network.
+EOF
+}
+
+DOMAIN=""
+RESOLVE_ADDRESS=""
+MIN_VALID_DAYS=14
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --resolve)
+      RESOLVE_ADDRESS=${2:?missing address}
+      shift 2
+      ;;
+    --min-valid-days)
+      MIN_VALID_DAYS=${2:?missing day count}
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    -*)
+      usage >&2
+      exit 2
+      ;;
+    *)
+      [[ -z "$DOMAIN" ]] || { usage >&2; exit 2; }
+      DOMAIN=${1%.}
+      shift
+      ;;
+  esac
+done
+
+DOMAIN=${DOMAIN,,}
+[[ "$DOMAIN" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$ ]] || {
+  echo "DOMAIN must be a DNS suffix such as preview.example.com" >&2
+  exit 2
+}
+[[ ${#DOMAIN} -le 253 ]] || {
+  echo "DOMAIN exceeds the 253-character DNS limit" >&2
+  exit 2
+}
+[[ "$MIN_VALID_DAYS" =~ ^[0-9]+$ && "$MIN_VALID_DAYS" -le 3650 ]] || {
+  echo "--min-valid-days must be an integer from 0 through 3650" >&2
+  exit 2
+}
+if [[ -n "$RESOLVE_ADDRESS" && ! "$RESOLVE_ADDRESS" =~ ^[a-zA-Z0-9.:%_-]+$ ]]; then
+  echo "--resolve contains unsupported characters" >&2
+  exit 2
+fi
+
+for command_name in curl openssl grep mktemp sed tr; do
+  command -v "$command_name" >/dev/null || {
+    echo "missing prerequisite: $command_name" >&2
+    exit 1
+  }
+done
+
+CONTROL_HOST="control.$DOMAIN"
+WEBHOOK_HOST="webhook.$DOMAIN"
+ACTIONS_HOST="actions.$DOMAIN"
+DENIED_HOST="tls-smoke-denied-${RANDOM}-$$.$DOMAIN"
+CERT_HOST="tls-smoke-certificate.$DOMAIN"
+for public_host in "$CONTROL_HOST" "$WEBHOOK_HOST" "$ACTIONS_HOST" "$DENIED_HOST" "$CERT_HOST"; do
+  [[ ${#public_host} -le 253 ]] || {
+    echo "derived public hostname exceeds the 253-character DNS limit: $public_host" >&2
+    exit 2
+  }
+done
+MIN_VALID_SECONDS=$((MIN_VALID_DAYS * 86400))
+CERT_FILE=$(mktemp)
+trap 'rm -f "$CERT_FILE"' EXIT
+
+pass() {
+  printf 'ok - %s\n' "$1"
+}
+
+fail() {
+  printf 'not ok - %s\n' "$1" >&2
+  exit 1
+}
+
+curl_resolve_args() {
+  local host=$1 port=$2 address=$RESOLVE_ADDRESS
+  [[ -n "$address" ]] || return 0
+  if [[ "$address" == *:* && "$address" != \[*\] ]]; then
+    address="[$address]"
+  fi
+  printf '%s\n' --resolve "$host:$port:$address"
+}
+
+https_status() {
+  local host=$1 path=$2 method=${3:-GET}
+  local -a args=(
+    --silent --show-error --output /dev/null
+    --connect-timeout 10 --max-time 30
+    --noproxy '*'
+    --proto '=https' --write-out '%{http_code}'
+  )
+  local -a resolve_args=()
+  if [[ -n "$RESOLVE_ADDRESS" ]]; then
+    mapfile -t resolve_args < <(curl_resolve_args "$host" 443)
+    args+=("${resolve_args[@]}")
+  fi
+  if [[ "$method" == "POST" ]]; then
+    args+=(--request POST --header 'Content-Type: application/json' --data '{}')
+  fi
+  curl "${args[@]}" "https://$host$path"
+}
+
+expect_status() {
+  local host=$1 path=$2 expected=$3 method=${4:-GET} status
+  status=$(https_status "$host" "$path" "$method") || fail "$method https://$host$path was unreachable"
+  [[ "$status" == "$expected" ]] || {
+    fail "$method https://$host$path returned $status, expected $expected"
+  }
+  pass "$method https://$host$path -> $expected"
+}
+
+declare -a http_args=(
+  --silent --show-error --output /dev/null
+  --connect-timeout 10 --max-time 30
+  --noproxy '*'
+  --proto '=http' --write-out $'%{http_code}\n%{redirect_url}'
+)
+if [[ -n "$RESOLVE_ADDRESS" ]]; then
+  declare -a redirect_resolve=()
+  mapfile -t redirect_resolve < <(curl_resolve_args "$CONTROL_HOST" 80)
+  http_args+=("${redirect_resolve[@]}")
+fi
+redirect_result=$(curl "${http_args[@]}" "http://$CONTROL_HOST/ui") || {
+  fail "HTTP redirect probe was unreachable"
+}
+redirect_status=${redirect_result%%$'\n'*}
+redirect_url=${redirect_result#*$'\n'}
+[[ "$redirect_status" =~ ^30[18]$ ]] || {
+  fail "http://$CONTROL_HOST/ui returned $redirect_status, expected 301 or 308"
+}
+[[ "$redirect_url" == "https://$CONTROL_HOST/ui" ]] || {
+  fail "HTTP redirect target was $redirect_url, expected https://$CONTROL_HOST/ui"
+}
+pass "HTTP redirects to the same HTTPS host and path"
+
+connect_host=$CERT_HOST
+if [[ -n "$RESOLVE_ADDRESS" ]]; then
+  connect_host=$RESOLVE_ADDRESS
+  if [[ "$connect_host" == *:* && "$connect_host" != \[*\] ]]; then
+    connect_host="[$connect_host]"
+  fi
+fi
+openssl s_client \
+  -connect "$connect_host:443" \
+  -servername "$CERT_HOST" \
+  -verify_hostname "$CERT_HOST" \
+  -verify_return_error </dev/null 2>/dev/null |
+  openssl x509 -out "$CERT_FILE" || fail "TLS certificate chain or hostname verification failed"
+openssl x509 -in "$CERT_FILE" -checkend "$MIN_VALID_SECONDS" -noout >/dev/null || {
+  fail "wildcard certificate expires within $MIN_VALID_DAYS days"
+}
+san_values=$(
+  openssl x509 -in "$CERT_FILE" -noout -ext subjectAltName |
+    sed -n '2,$p' | tr ',' '\n' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g'
+)
+grep -Fxq "DNS:*.$DOMAIN" <<<"$san_values" || {
+  fail "certificate does not contain the required DNS:*.$DOMAIN SAN"
+}
+pass "trusted wildcard certificate covers *.$DOMAIN for at least $MIN_VALID_DAYS days"
+
+# Positive narrow-ingress probes use deliberately unauthenticated requests.
+# Their 401/403 responses prove the route is exposed without risking a valid
+# webhook or deployment. Every internal or cross-host path must remain 404.
+expect_status "$CONTROL_HOST" "/ui/login" 200
+expect_status "$WEBHOOK_HOST" "/webhooks/github" 401 POST
+expect_status "$ACTIONS_HOST" "/actions/gp-cloud-deploy" 403 POST
+expect_status "$CONTROL_HOST" "/metrics" 404
+expect_status "$CONTROL_HOST" "/healthz" 404
+expect_status "$CONTROL_HOST" "/v1/deployments" 404
+expect_status "$CONTROL_HOST" "/webhooks/github" 404 POST
+expect_status "$CONTROL_HOST" "/actions/gp-cloud-deploy" 404 POST
+expect_status "$WEBHOOK_HOST" "/ui/login" 404
+expect_status "$WEBHOOK_HOST" "/metrics" 404
+expect_status "$ACTIONS_HOST" "/ui/login" 404
+expect_status "$ACTIONS_HOST" "/metrics" 404
+expect_status "$DENIED_HOST" "/" 404
+
+echo "TLS and public ingress smoke checks passed for *.$DOMAIN"

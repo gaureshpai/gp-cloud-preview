@@ -4,26 +4,53 @@
 # explicit "Delete all" action purges them.
 set -Eeuo pipefail
 
-SLUG=${1:?Usage: gp-cloud-clean PROJECT-PR-N}
-[[ "$SLUG" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || { echo "invalid deployment slug" >&2; exit 2; }
+usage() {
+  echo "Usage: gp-cloud-clean --runtime-slug SLUG [--route-slug SLUG] [--keep-route]" >&2
+  exit 2
+}
+
+RUNTIME_SLUG=""
+ROUTE_SLUG=""
+KEEP_ROUTE=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --runtime-slug) RUNTIME_SLUG=${2:?missing runtime slug}; shift 2 ;;
+    --route-slug) ROUTE_SLUG=${2:?missing route slug}; shift 2 ;;
+    --keep-route) KEEP_ROUTE=1; shift ;;
+    *) usage ;;
+  esac
+done
+
+[[ "$RUNTIME_SLUG" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || { echo "invalid runtime slug" >&2; exit 2; }
+if [[ -n "$ROUTE_SLUG" ]]; then
+  [[ "$ROUTE_SLUG" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || { echo "invalid route slug" >&2; exit 2; }
+fi
 
 ROOT=${GP_CLOUD_ROOT:-/opt/gp-cloud}
-CONTAINER="gp-cloud-$SLUG"
-ROUTE="$ROOT/config/caddy/routes/$SLUG.caddy"
-METADATA="$ROOT/deployments/$SLUG/metadata.json"
+CONTAINER="gp-cloud-$RUNTIME_SLUG"
+NETWORK="gp-cloud-$RUNTIME_SLUG"
+BUILDER="gpcb-${RUNTIME_SLUG: -8}"
+ROUTE="$ROOT/config/caddy/routes/$ROUTE_SLUG.caddy"
+METADATA="$ROOT/deployments/$RUNTIME_SLUG/metadata.json"
 
-docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
-rm -f "$ROUTE"
+docker rm -fv "$CONTAINER" >/dev/null 2>&1 || true
+docker network rm "$NETWORK" >/dev/null 2>&1 || true
+docker buildx rm --force "$BUILDER" >/dev/null 2>&1 || true
+if [[ "$KEEP_ROUTE" != "1" && -n "$ROUTE_SLUG" ]]; then
+  rm -f "$ROUTE"
+fi
 if [[ -f "$METADATA" ]]; then
   IMAGE=$(sed -nE 's/.*"image": "([^"]+)".*/\1/p' "$METADATA" | head -1)
-  [[ -n "$IMAGE" ]] && docker image rm "$IMAGE" >/dev/null 2>&1 || true
+  if [[ -n "$IMAGE" ]]; then
+    docker image rm "$IMAGE" >/dev/null 2>&1 || true
+  fi
 fi
 # Caddy is optional in local-only mode, so cleanup must not fail merely because
 # there is no public edge to reload.
-if systemctl is-active --quiet caddy; then
+if [[ "$KEEP_ROUTE" != "1" && -n "$ROUTE_SLUG" && -f /etc/caddy/.gp-cloud-preview-managed ]] && systemctl is-active --quiet caddy; then
   systemctl reload caddy
 fi
 # Deployment logs are retained for control-plane status and post-mortem
 # inspection. The source workspace and runtime artifacts are ephemeral.
-rm -rf "$ROOT/deployments/$SLUG"
-echo "cleaned $SLUG"
+rm -rf "$ROOT/deployments/$RUNTIME_SLUG"
+echo "cleaned $RUNTIME_SLUG"

@@ -1,0 +1,24 @@
+[Unit]
+Description=GP Cloud optional Prometheus monitoring
+After=network-online.target gp-cloud.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=prometheus
+Group=prometheus
+ExecStart=/usr/bin/prometheus --config.file=/etc/gp-cloud/monitoring/prometheus.yml --storage.tsdb.path=/var/lib/gp-cloud-prometheus --web.listen-address=127.0.0.1:9091
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/gp-cloud-prometheus
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

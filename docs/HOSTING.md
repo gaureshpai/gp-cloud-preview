@@ -1,19 +1,11 @@
-# Hosting GP Cloud Preview for yourself or the community
+# Hosting GP Cloud Preview
 
-GP Cloud Preview is a host-level preview service, not a SaaS control plane. A
-single Linux VM runs the API, worker, Caddy, and optional monitoring. Anyone
-can fork the repository and host an isolated instance for their own projects.
+Use a dedicated Debian 12 or Ubuntu 24.04 VM with Python 3.11+, Docker Engine
+and its Buildx plugin, Git, curl, systemd, and Caddy. Two vCPUs and 4 GB RAM are
+a practical minimum for small previews. Do not mix production or unrelated
+tenant workloads with untrusted preview builds.
 
-## Minimum host
-
-- Debian 12 or Ubuntu 24.04
-- A dedicated VM; a public IPv4 address is needed only for public hosting
-- Docker Engine, Git, curl, Caddy, and systemd
-- 2 vCPU / 4 GB RAM for small static sites; size larger hosts for heavier builds
-- Local-only mode needs no public application port; 8787, 2222, 3000, and
-  deployment host ports remain loopback-only
-
-## Install
+## Local-only installation
 
 ```sh
 git clone <your-fork-url> gp-cloud-preview
@@ -21,99 +13,170 @@ cd gp-cloud-preview
 sudo ./scripts/gp-cloud-install
 sudoedit /opt/gp-cloud/config/gp-cloud.env
 sudo systemctl restart gp-cloud.service
+curl --fail http://127.0.0.1:8787/healthz
 ```
 
-For public hosting, set a preview domain and DNS wildcard, configure TLS at an
-edge proxy, generate API/webhook credentials, and explicitly allowlist
-repositories. Use a dedicated GitHub App installation or a narrowly scoped
-token for private repositories; credentials never replace the allowlist.
+The default does not touch an existing Prometheus configuration or Caddyfile,
+does not enable public listeners, and does not invent secrets. Use
+`ssh -L 8787:127.0.0.1:8787 user@host` for dashboard access.
 
-To host this for other people, first configure a secured public edge, then give
-them the HTTPS control URL (`https://control.<domain>`) and a separate UI
-password. Keep 8787, 9090, and application host ports loopback-only; public
-traffic should enter through the edge. The dashboard provides Stop all and
-Delete all controls for emergency shutdown and cleanup.
+## GitHub setup
 
-The installer defaults to local-only mode and disables Caddy. The bundled
-Caddyfile listens for plain HTTP only, so public operators must place TLS at a
-trusted proxy or replace the edge configuration before exposing it. To inspect the
-dashboard remotely without exposing it, use `ssh -L 8787:127.0.0.1:8787
-user@host` and open `http://127.0.0.1:8787/ui` locally.
+Set distinct random API/admin/webhook secrets and an explicit repository
+allowlist. For private clones, prefer a narrowly installed GitHub App. Enable
+`issue_comment` and `pull_request` webhook events and use JSON content.
 
-## Vault setup
+Public mode webhook URL:
 
-Use Vault KV v2. Create a policy that permits the control plane to read/write
-only the project prefix it owns, then provide a short-lived token through a
-root-owned token file:
-
-```sh
-sudo install -o root -g root -m 0600 /dev/null /opt/gp-cloud/config/vault.token
-sudoedit /opt/gp-cloud/config/vault.token
+```text
+https://webhook.<preview-domain>/webhooks/github
 ```
+
+Only an exact `/deploy` comment from a trusted repository owner/member/collaborator
+is accepted. Edited/deleted comments, arguments, prose, quotes, code blocks,
+case variants, untrusted associations, duplicate delivery IDs, non-PR issues,
+forks (by default), and non-allowlisted repositories cannot enqueue work.
+
+GitHub Actions use `https://actions.<preview-domain>` and must keep the control
+URL in an Actions secret. They send their token in `Authorization` and the
+exact repository in `X-GitHub-Repository`. Candidate responses do not publish
+a preview URL before promotion.
+
+## Wildcard DNS and HTTPS
+
+Create an A/AAAA wildcard record such as:
+
+```text
+*.preview.example.com -> public VM address
+```
+
+Install/build Caddy with the `github.com/caddy-dns/cloudflare` module. Create a
+Cloudflare API token restricted to DNS edit/read for only this zone. Configure
+`gp-cloud.env`:
 
 ```dotenv
-GP_CLOUD_VAULT_ADDR=https://vault.example.com
-GP_CLOUD_VAULT_TOKEN_FILE=/opt/gp-cloud/config/vault.token
-GP_CLOUD_VAULT_MOUNT=secret
+GP_CLOUD_PREVIEW_DOMAIN=preview.example.com
+GP_CLOUD_PUBLIC_SCHEME=https
+GP_CLOUD_HTTP_PORT=443
+GP_CLOUD_COOKIE_SECURE=true
 ```
 
-Restart the service. The dashboard should report Vault as configured. Values
-entered in the Vault panel are never written to deployment JSON or logs.
-Secret values are intentionally not displayed in the dashboard. The Host
-configuration card shows availability and variable names; Vault injects the
-actual values into the selected application at startup. Deployment Vault paths
-must remain below `gp-cloud/`.
+Configure edge-only `/opt/gp-cloud/config/caddy.env`:
 
-## Application port
-
-Generated static profiles listen on container port `2222`. When the public edge
-is enabled, Caddy routes each preview hostname to a dynamically allocated
-loopback host port. Use HTTPS for public hosting. The control dashboard is not
-directly exposed by the control service; it remains on loopback unless the
-operator deliberately publishes it through the edge.
-Custom Dockerfiles may use another port when `app_port` is provided, but the
-application must listen on that port.
-
-## GitHub integration
-
-Configure a webhook at `/webhooks/github` with the exact HMAC secret and enable
-`issue_comment` and `pull_request`. The repository must be in
-`GP_CLOUD_ALLOWED_REPOS`; GitHub App credentials only authorize cloning and
-installation identity. `/deploy` on an allowed pull request starts a preview.
-Closing or merging the pull request stops it. The TTL cleanup loop also stops
-jobs that outlive their configured lifetime.
-
-For a GitHub Actions workflow, store the secured control URL as an Actions
-secret and expose it to the step as an environment variable. Do not hardcode a
-private tunnel URL or credential in the workflow:
-
-```yaml
-env:
-  GP_CLOUD_CONTROL_URL: ${{ secrets.GP_CLOUD_CONTROL_URL }}
+```dotenv
+GP_CLOUD_PREVIEW_DOMAIN=preview.example.com
+GP_CLOUD_CONTROL_PORT=8787
+GP_CLOUD_CADDY_ACME_EMAIL=operator@example.com
+GP_CLOUD_CLOUDFLARE_API_TOKEN=<zone-limited-token>
 ```
 
-The workflow must send `POST /actions/gp-cloud-deploy` with the GitHub token in
-the `Authorization: Bearer` header and `X-GitHub-Repository` set to the exact
-`owner/repository`. The control URL must be reachable by GitHub-hosted runners
-over HTTPS; a loopback address or an expired temporary tunnel cannot work.
+Rerun the explicit public installer path:
 
-## Production use
+```sh
+sudo ./scripts/gp-cloud-install --enable-public-edge
+sudo systemctl is-active caddy
+sudo journalctl -u caddy -n 100 --no-pager
+```
 
-Use GP Cloud Preview for staging, review apps, demos, and open-source examples.
-For a production site, put a separate production deployment behind its own
-backup, database, observability, and rollback process. The preview worker is
-single-concurrency by design and is not a replacement for a multi-node
-orchestrator.
+Caddy is started when it is stopped, or reloaded when it is already running, so
+the explicit installer command applies the new configuration immediately. Caddy
+obtains and renews one DNS-01 wildcard certificate. Port 80 redirects to
+HTTPS; port 443 serves the separated webhook, action, dashboard, and preview
+host policies. Keep 8787, 9091, and dynamic Docker host ports firewalled to
+loopback.
+
+To stop the GP Cloud edge explicitly:
+
+```sh
+sudo ./scripts/gp-cloud-install --disable-public-edge
+```
+
+The command refuses to stop an unmarked operator-owned Caddy service. For a
+GP Cloud-managed edge it stops/disables Caddy and removes GP Cloud's ownership
+marker, but retains `/etc/caddy/Caddyfile`, its environment drop-in,
+`/opt/gp-cloud/config/caddy.env`, generated routes, and any timestamped backups
+for inspection or re-enable. Restore the desired backup and remove GP Cloud's
+retained Caddy files manually before repurposing that service for another use.
+
+Run the read-only smoke test from an external machine after DNS and Caddy are
+live:
+
+```sh
+./scripts/gp-cloud-tls-smoke preview.example.com
+```
+
+Before DNS changes propagate, direct the probes to the intended edge while
+preserving HTTP Host and TLS SNI:
+
+```sh
+./scripts/gp-cloud-tls-smoke preview.example.com --resolve 203.0.113.10
+```
+
+The script requires `curl` and OpenSSL. It verifies the HTTP-to-HTTPS redirect,
+the trusted wildcard SAN and at least 14 days of remaining certificate validity,
+the three intentionally public ingress paths, and the default-deny matrix for
+control, metrics, API, and arbitrary preview hosts. It sends only empty,
+unauthenticated webhook/action probes, so it cannot enqueue a deployment. Use
+`--min-valid-days DAYS` to change the expiry threshold. Check Caddy renewal logs
+regularly because DNS-01 renewal needs continued access to the limited DNS
+token. If renewal fails, disable Caddy before expiry rather than serving an
+insecure fallback.
+
+## Vault
+
+Use KV v2 and a policy limited to `gp-cloud/`. Put a short-lived token in a
+root-owned mode-0600 file under `/opt/gp-cloud/config`; do not use a Vault root
+token. Deployment paths cannot escape or imitate the configured prefix.
+
+Project profiles are keyed by canonical `owner/repository`. Legacy project-name
+keys apply only to direct deployments; they are not used for pull-request
+deployments, preventing same-named repositories from sharing configuration.
+PR source is untrusted and receives no Vault values by default. Supplying
+preview-only, disposable secrets to a PR requires both
+`GP_CLOUD_ALLOW_PR_SECRETS=true` and `allow_pr_secrets: true` in that canonical
+repository profile. Keep production credentials out of all preview profiles.
+
+## Build isolation and limits
+
+The host requires `docker buildx`. Each attempt gets a uniquely named
+docker-container builder, disables shared build cache reuse, and applies
+`GP_CLOUD_BUILD_MEMORY_LIMIT` and `GP_CLOUD_BUILD_CPU_QUOTA`. The builder is
+normally removed when the build command exits. Runtime limits remain separately
+controlled by `GP_CLOUD_MEMORY_LIMIT` and `GP_CLOUD_CPU_LIMIT`.
+
+Dockerfile `RUN` networking is `none` by default, blocking cloud metadata,
+private-network, and internet access during builds. Repositories whose locked
+dependencies are not vendored must be explicitly trusted with
+`allow_build_network: true` in their canonical profile. PR deployments also
+require `GP_CLOUD_ALLOW_PR_BUILD_NETWORK=true`. This double opt-in enables
+ordinary Docker egress; leave the host flag off for fork and other hostile PR
+source.
+
+Images declaring Docker `VOLUME`s are rejected because anonymous writable
+volumes bypass the read-only-root contract and are difficult to bound and
+clean reliably. Use the provided bounded `/tmp` tmpfs for transient writes.
+These controls reduce collision and resource risk, but the builders still use
+the host Docker daemon; use a dedicated VM or stronger rootless/disposable
+builder isolation for hostile public contributions.
+
+## Optional monitoring
+
+Prometheus is not a prerequisite. To opt in after installing the `prometheus`
+and `promtool` commands and a local `prometheus` user:
+
+```sh
+sudo ./scripts/gp-cloud-install --enable-monitoring
+sudo /opt/gp-cloud/worker/gp-cloud-monitoring status
+```
+
+The dedicated service binds to `127.0.0.1:9091`, avoiding the distribution
+service's usual 9090, and owns only its namespaced config/unit/data. It does not
+modify `/etc/prometheus/prometheus.yml`. See [MONITORING.md](MONITORING.md).
 
 ## Upgrade and rollback
 
-```sh
-sudo cp -a /opt/gp-cloud/config/gp-cloud.env /opt/gp-cloud/config/gp-cloud.env.backup
-git pull --ff-only
-sudo ./scripts/gp-cloud-install
-sudo systemctl restart gp-cloud.service
-sudo journalctl -u gp-cloud.service -n 100 --no-pager
-```
-
-The installer backs up an existing Caddyfile. Deployment JSON, logs, and
-Vault data are kept outside the source checkout.
+Back up `/opt/gp-cloud/config/gp-cloud.env` and Caddy's limited env, pull with
+`--ff-only`, rerun the installer using only the options previously intended,
+restart, and run recovery/route checks. State/history/logs/Vault data are
+outside the checkout and are retained. The installer backs up a differing
+Caddyfile before replacing it in explicit public mode.
