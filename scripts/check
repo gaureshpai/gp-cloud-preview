@@ -16,7 +16,7 @@ if command -v caddy >/dev/null; then
   CHECK_ROUTES=$(mktemp -d)
   trap 'rm -f "$CHECK_FORMATTED"; rmdir "$CHECK_ROUTES"' EXIT
   export GP_CLOUD_CADDY_ACME_EMAIL=${GP_CLOUD_CADDY_ACME_EMAIL:-check@example.com}
-  export GP_CLOUD_CLOUDFLARE_API_TOKEN=${GP_CLOUD_CLOUDFLARE_API_TOKEN:-check-token}
+  export GP_CLOUD_CLOUDFLARE_API_TOKEN=${GP_CLOUD_CLOUDFLARE_API_TOKEN:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
   export GP_CLOUD_CONTROL_PORT=${GP_CLOUD_CONTROL_PORT:-8787}
   export GP_CLOUD_PREVIEW_DOMAIN=${GP_CLOUD_PREVIEW_DOMAIN:-preview.example.com}
   export GP_CLOUD_CADDY_ROUTES_DIR="$CHECK_ROUTES"
