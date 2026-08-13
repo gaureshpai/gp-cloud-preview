@@ -85,7 +85,9 @@ workloads on the same VM.
 
 ## Pre-public checklist
 
-1. Use a dedicated patched VM and configure firewall ports 80/443 only.
+1. Use a dedicated patched VM and expose only ports 80/443 publicly. Keep SSH,
+   VPN, or provider-console management access restricted for operations and
+   tunnel procedures.
 2. Verify wildcard DNS, certificate SAN/expiry/renewal, and HTTP redirects.
 3. Set distinct long API, admin, and webhook credentials; limit GitHub/Vault/DNS
    permissions and keep their files mode 0600/0640.

@@ -153,6 +153,14 @@ class ControlContractTests(unittest.TestCase):
             )
         with self.assertRaises(ValueError):
             control.validate_vault_path("gp-cloud-evil/project")
+        with self.assertRaises(ValueError):
+            normalize_job(
+                {
+                    "repo_url": "https://github.com/owner/site.git",
+                    "sha": "d" * 40,
+                    "vault_path": "gp-cloud/../root",
+                }
+            )
 
     def test_deploy_command_parser_is_exact_and_conservative(self):
         accepted = ["/deploy", " /deploy", "\t/deploy\t"]
@@ -395,16 +403,6 @@ value=${value%\\^\\{commit\\}}
         ):
             self.assertTrue(control.action_token_allows_repo("token", "owner/site"))
             self.assertFalse(control.action_token_allows_repo("token", "owner/other"))
-        with self.assertRaises(ValueError):
-            normalize_job(
-                {
-                    "repo_url": "https://github.com/owner/site.git",
-                    "sha": "d" * 40,
-                    "vault_path": "gp-cloud/../root",
-                }
-            )
-
-
 class ControlHTTPIntegrationTests(unittest.TestCase):
     """Exercise the real HTTP handler against isolated temporary state."""
 
@@ -418,6 +416,9 @@ class ControlHTTPIntegrationTests(unittest.TestCase):
         self.stack.enter_context(patch.object(control, "PREVIEW_DIR", root / "data/previews"))
         self.stack.enter_context(patch.object(control, "QUEUE_DIR", root / "data/queue"))
         self.stack.enter_context(patch.object(control, "TOKEN_DIR", root / "data/action-tokens"))
+        self.stack.enter_context(
+            patch.object(control, "FAILURE_COUNTER_FILE", root / "data/deployment-failures.json")
+        )
         self.stack.enter_context(
             patch.object(control, "DELIVERY_DIR", root / "data/webhook-deliveries")
         )
@@ -821,6 +822,9 @@ class LifecycleRegressionTests(unittest.TestCase):
         self.stack.enter_context(patch.object(control, "PREVIEW_DIR", root / "data/previews"))
         self.stack.enter_context(patch.object(control, "QUEUE_DIR", root / "data/queue"))
         self.stack.enter_context(patch.object(control, "TOKEN_DIR", root / "data/action-tokens"))
+        self.stack.enter_context(
+            patch.object(control, "FAILURE_COUNTER_FILE", root / "data/deployment-failures.json")
+        )
         self.stack.enter_context(patch.object(control, "DEPLOYMENTS", root / "deployments"))
         self.stack.enter_context(
             patch.object(control, "SETTINGS_FILE", root / "data/control-settings.json")

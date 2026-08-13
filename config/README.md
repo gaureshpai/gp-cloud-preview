@@ -32,6 +32,7 @@ The repository intentionally contains only safe configuration templates:
     }
   }
   ```
+
 - The dashboard can confirm the live env file path and show redacted variable
   names. It never displays secret values. Use the Vault panel and set a
   deployment's `vault_path` below `gp-cloud/` to make values available inside

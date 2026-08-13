@@ -32,7 +32,7 @@ Public mode webhook URL:
 https://webhook.<preview-domain>/webhooks/github
 ```
 
-Only an exact `/deploy` comment from a trusted repository member/collaborator
+Only an exact `/deploy` comment from a trusted repository owner/member/collaborator
 is accepted. Edited/deleted comments, arguments, prose, quotes, code blocks,
 case variants, untrusted associations, duplicate delivery IDs, non-PR issues,
 forks (by default), and non-allowlisted repositories cannot enqueue work.

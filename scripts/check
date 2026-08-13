@@ -26,3 +26,6 @@ if command -v promtool >/dev/null; then
 fi
 
 git diff --check
+if [[ -n "${GITHUB_BASE_REF:-}" ]]; then
+  git diff --check "origin/${GITHUB_BASE_REF}...HEAD"
+fi

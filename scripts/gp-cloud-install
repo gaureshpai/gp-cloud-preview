@@ -84,6 +84,12 @@ if [[ "$ENABLE_PUBLIC_EDGE" == "1" ]]; then
   GP_CLOUD_CLOUDFLARE_API_TOKEN=$(read_config_value GP_CLOUD_CLOUDFLARE_API_TOKEN "$CONFIG_ROOT/caddy.env")
   GP_CLOUD_PUBLIC_SCHEME=$(read_config_value GP_CLOUD_PUBLIC_SCHEME "$CONFIG_ROOT/gp-cloud.env")
   GP_CLOUD_COOKIE_SECURE=$(read_config_value GP_CLOUD_COOKIE_SECURE "$CONFIG_ROOT/gp-cloud.env")
+  CONTROL_DOMAIN=$(read_config_value GP_CLOUD_PREVIEW_DOMAIN "$CONFIG_ROOT/gp-cloud.env")
+  CONTROL_PORT=$(read_config_value GP_CLOUD_CONTROL_PORT "$CONFIG_ROOT/gp-cloud.env")
+  [[ "$GP_CLOUD_PREVIEW_DOMAIN" == "$CONTROL_DOMAIN" && "$GP_CLOUD_CONTROL_PORT" == "$CONTROL_PORT" ]] || {
+    echo "caddy.env and gp-cloud.env must agree on GP_CLOUD_PREVIEW_DOMAIN and GP_CLOUD_CONTROL_PORT" >&2
+    exit 1
+  }
   export GP_CLOUD_PREVIEW_DOMAIN GP_CLOUD_CONTROL_PORT GP_CLOUD_CADDY_ACME_EMAIL
   export GP_CLOUD_CLOUDFLARE_API_TOKEN
   : "${GP_CLOUD_PREVIEW_DOMAIN:?configure GP_CLOUD_PREVIEW_DOMAIN before enabling the edge}"
@@ -99,7 +105,7 @@ if [[ "$ENABLE_PUBLIC_EDGE" == "1" ]]; then
   }
   caddy validate --config "$SOURCE_ROOT/caddy/Caddyfile"
   CADDY_BACKUP=""
-  if [[ -f /etc/caddy/Caddyfile ]] && ! cmp -s "$SOURCE_ROOT/caddy/Caddyfile" /etc/caddy/Caddyfile; then
+  if [[ -f /etc/caddy/Caddyfile ]]; then
     CADDY_BACKUP="/etc/caddy/Caddyfile.gp-cloud-backup.$(date +%s)"
     cp -a /etc/caddy/Caddyfile "$CADDY_BACKUP"
   fi

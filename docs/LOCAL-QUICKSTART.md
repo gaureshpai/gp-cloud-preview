@@ -1,9 +1,12 @@
 # Local no-VM quickstart
 
 This is the safest way to evaluate GP Cloud Preview on a Linux machine. It
-requires systemd, root/sudo, Docker Engine, Git, curl, Caddy, and Python 3.11+
+requires systemd, root/sudo, Docker Engine, Git, curl, and Python 3.11+
 (native Debian 12 and Ubuntu 24.04 are supported). macOS/Windows need a Linux
 VM or WSL2 environment with systemd and Docker.
+
+Caddy is required only for the optional public HTTPS edge described in
+[HOSTING.md](HOSTING.md).
 
 ## Install and configure
 
@@ -91,7 +94,7 @@ valid current deployments remain current without duplicates. See
 
 GitHub cannot call loopback. Use the dashboard/API locally, or configure the
 secured wildcard edge before adding webhooks. The only supported comment
-command is a standalone lowercase `/deploy` from a trusted collaborator.
+command is a standalone lowercase `/deploy` from a trusted owner, member, or collaborator.
 
 Vault is optional when an app needs no secrets. If enabled, give the service a
 KV v2 policy limited to `gp-cloud/` and reference a project path; never put app
