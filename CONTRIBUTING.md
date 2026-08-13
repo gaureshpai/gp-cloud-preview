@@ -3,15 +3,11 @@
 Run the local checks before submitting changes:
 
 ```sh
-python3 -m unittest discover -s tests -v
-python3 -m py_compile control/gp_cloud_control.py
-bash -n scripts/*
-uvx ruff format --check control tests
+./scripts/check
 ```
 
-Ruff formatting is configured in `pyproject.toml`. Run
-`uvx ruff format control tests` after changing Python code; the formatter does
-not modify shell scripts, Dockerfiles, or Markdown.
+CI installs the pinned Ruff version and ShellCheck, then runs the same script.
+Ruff lint/format is configured in `pyproject.toml`; use Ruff 0.12.8 locally.
 
 Keep the control service standard-library-only. Add a function docstring and a
 comment for security-sensitive behavior, state transitions, filesystem access,

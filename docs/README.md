@@ -5,6 +5,7 @@
 - [Architecture and runtime contracts](ARCHITECTURE.md)
 - [Operations runbook](OPERATIONS.md)
 - [Security model and threat boundaries](SECURITY.md)
+- [Optional monitoring](MONITORING.md)
 - [Contributing and validation](../CONTRIBUTING.md)
 - [Configuration and live-file visibility](../config/README.md)
 
@@ -14,7 +15,7 @@ for the dashboard, cleanup, metrics, and incident commands. Read
 repositories.
 
 Generated preview containers use port 2222 by default. The installer runs in
-local-only mode: Caddy is disabled and the control API listens on loopback.
+local-only mode: it does not configure/enable Caddy and the API stays on loopback.
 Use an SSH tunnel for the UI. The Host configuration card edits non-secret
 control settings; application secrets and the admin password remain local-only
 and are never rendered in the browser.

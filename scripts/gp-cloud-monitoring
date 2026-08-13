@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Manage the optional, loopback-only GP Cloud Prometheus instance without
+# changing a distribution or operator-owned Prometheus installation.
+set -Eeuo pipefail
+
+[[ "${EUID}" -eq 0 ]] || { echo "run as root" >&2; exit 1; }
+ACTION=${1:-}
+[[ $# -eq 1 && "$ACTION" =~ ^(enable|disable|status|uninstall)$ ]] || {
+  echo "Usage: $0 enable|disable|status|uninstall" >&2
+  exit 2
+}
+
+SOURCE_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+TEST_ROOT=${GP_CLOUD_TEST_ROOT:-}
+if [[ -n "$TEST_ROOT" && "${GP_CLOUD_TESTING:-}" != "true" ]]; then
+  echo "GP_CLOUD_TEST_ROOT is only accepted with GP_CLOUD_TESTING=true" >&2
+  exit 2
+fi
+CONFIG_DIR="$TEST_ROOT/etc/gp-cloud/monitoring"
+DATA_DIR="$TEST_ROOT/var/lib/gp-cloud-prometheus"
+UNIT="$TEST_ROOT/etc/systemd/system/gp-cloud-prometheus.service"
+PROMETHEUS_OWNER=prometheus
+if [[ -n "$TEST_ROOT" ]]; then PROMETHEUS_OWNER=root; fi
+
+case "$ACTION" in
+  enable)
+    for command_name in prometheus promtool systemctl curl; do
+      command -v "$command_name" >/dev/null || {
+        echo "missing monitoring prerequisite: $command_name" >&2
+        exit 1
+      }
+    done
+    install -d -o root -g root -m 0755 "$CONFIG_DIR"
+    install -d -o root -g root -m 0755 "$(dirname "$UNIT")"
+    install -d -o "$PROMETHEUS_OWNER" -g "$PROMETHEUS_OWNER" -m 0750 "$DATA_DIR"
+    install -o root -g root -m 0644 "$SOURCE_ROOT/monitoring/prometheus.yml" "$CONFIG_DIR/prometheus.yml"
+    install -o root -g root -m 0644 "$SOURCE_ROOT/monitoring/alerts.yml" "$CONFIG_DIR/alerts.yml"
+    promtool check config "$CONFIG_DIR/prometheus.yml"
+    promtool check rules "$CONFIG_DIR/alerts.yml"
+    install -o root -g root -m 0644 "$SOURCE_ROOT/monitoring/gp-cloud-prometheus.service" "$UNIT"
+    systemctl daemon-reload
+    systemctl enable --now gp-cloud-prometheus.service
+    ;;
+  disable)
+    systemctl disable --now gp-cloud-prometheus.service >/dev/null 2>&1 || true
+    echo "Monitoring disabled; configuration and time-series data were retained."
+    ;;
+  status)
+    systemctl is-active --quiet gp-cloud.service
+    curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8787/healthz >/dev/null
+    systemctl is-active --quiet gp-cloud-prometheus.service
+    curl --fail --silent --show-error --max-time 5 http://127.0.0.1:9091/-/ready >/dev/null
+    echo "GP Cloud and optional monitoring are healthy."
+    ;;
+  uninstall)
+    systemctl disable --now gp-cloud-prometheus.service >/dev/null 2>&1 || true
+    rm -f "$UNIT"
+    rm -rf "$CONFIG_DIR"
+    systemctl daemon-reload
+    echo "Monitoring integration removed; $DATA_DIR was retained."
+    ;;
+esac

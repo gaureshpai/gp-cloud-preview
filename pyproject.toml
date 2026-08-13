@@ -1,6 +1,6 @@
 [tool.ruff]
 # Keep formatting deterministic across local development and CI.
-target-version = "py312"
+target-version = "py311"
 line-length = 100
 exclude = [
     ".git",
@@ -17,3 +17,13 @@ indent-style = "space"
 line-ending = "lf"
 skip-magic-trailing-comma = false
 docstring-code-format = true
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "S", "UP"]
+ignore = [
+    "S101", # unittest assertions are intentional
+    "S603", # subprocess argument lists are validated and never use shell=True
+    "S607", # host commands intentionally resolve through the service PATH
+    "S310", # URL schemes are validated at ingress or fixed to trusted services
+    "E501", # embedded generated Dockerfiles and dashboard assets are intentionally compact
+]

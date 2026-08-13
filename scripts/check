@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Run the same deterministic checks used by CI.
+set -Eeuo pipefail
+
+python3 -m unittest discover -s tests -v
+python3 -m compileall -q control tests
+ruff check control tests
+ruff format --check control tests
+bash -n scripts/gp-cloud-clean scripts/gp-cloud-deploy scripts/gp-cloud-inspect \
+  scripts/gp-cloud-install scripts/gp-cloud-monitoring scripts/gp-cloud-tls-smoke scripts/check
+shellcheck scripts/gp-cloud-clean scripts/gp-cloud-deploy scripts/gp-cloud-inspect \
+  scripts/gp-cloud-install scripts/gp-cloud-monitoring scripts/gp-cloud-tls-smoke scripts/check
+
+if command -v caddy >/dev/null; then
+  CHECK_FORMATTED=$(mktemp)
+  trap 'rm -f "$CHECK_FORMATTED"' EXIT
+  caddy fmt caddy/Caddyfile > "$CHECK_FORMATTED"
+  cmp -s caddy/Caddyfile "$CHECK_FORMATTED" || {
+    echo "caddy/Caddyfile is not formatted; run caddy fmt --overwrite caddy/Caddyfile" >&2
+    exit 1
+  }
+fi
+if command -v promtool >/dev/null; then
+  promtool check config --syntax-only monitoring/prometheus.yml
+  promtool check rules monitoring/alerts.yml
+fi
+
+git diff --check
