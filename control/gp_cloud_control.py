@@ -276,15 +276,29 @@ def validate_vault_path(value: object) -> str:
     return path
 
 
+def managed_path(path: Path) -> Path:
+    """Return a canonical path only when it stays inside GP Cloud storage."""
+    resolved = path.resolve(strict=False)
+    roots = (
+        DATA.resolve(strict=False),
+        DEPLOYMENTS.resolve(strict=False),
+        (ROOT / "config" / "caddy" / "routes").resolve(strict=False),
+    )
+    if not any(resolved.is_relative_to(root) for root in roots):
+        raise ValueError("path is outside managed GP Cloud storage")
+    return resolved
+
+
 def atomic_json(path: Path, value: dict) -> None:
     """Replace a JSON file atomically so readers never see partial state."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    safe_path = managed_path(path)
+    safe_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=f".{safe_path.name}.", dir=safe_path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(value, handle, indent=2, sort_keys=True)
             handle.write("\n")
-        os.replace(name, path)
+        os.replace(name, safe_path)
     finally:
         if os.path.exists(name):
             os.unlink(name)
@@ -299,13 +313,14 @@ def atomic_text(path: Path, value: str) -> None:
         value (str): Text to write.
         mode (int): File permission mode for the replacement file.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    safe_path = managed_path(path)
+    safe_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=f".{safe_path.name}.", dir=safe_path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(value)
         os.chmod(name, 0o600)
-        os.replace(name, path)
+        os.replace(name, safe_path)
     finally:
         if os.path.exists(name):
             os.unlink(name)
@@ -313,12 +328,13 @@ def atomic_text(path: Path, value: str) -> None:
 
 def atomic_route_text(path: Path, value: str) -> None:
     """Replace a routing file atomically with owner-only permissions."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    safe_path = managed_path(path)
+    safe_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=f".{safe_path.name}.", dir=safe_path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(value)
-        os.replace(name, path)
+        os.replace(name, safe_path)
     finally:
         if os.path.exists(name):
             os.unlink(name)
@@ -326,7 +342,10 @@ def atomic_route_text(path: Path, value: str) -> None:
 
 def state_path(deployment_id: str) -> Path:
     """Map a validated deployment identifier to its state file."""
-    return STATE_DIR / f"{deployment_id}.json"
+    match = re.fullmatch(r"dep_[0-9]+_[0-9a-f]+", deployment_id)
+    if match is None:
+        raise ValueError("invalid deployment id")
+    return STATE_DIR / f"{match.group(0)}.json"
 
 
 def preview_identity(repo: str, pr_number: int, project: str) -> tuple[str, str]:
@@ -465,14 +484,7 @@ def queue_operation(action: str, deployment_id: str) -> None:
     safe_action = action
     safe_deployment_id = deployment_match.group(0)
     QUEUE_DIR.mkdir(parents=True, exist_ok=True)
-    marker = QUEUE_DIR / f"{safe_deployment_id}.{safe_action}"
-    queue_dir_resolved = QUEUE_DIR.resolve(strict=False)
-    marker_resolved = marker.resolve(strict=False)
-    if (
-        marker_resolved.parent != queue_dir_resolved
-        or marker.name != f"{safe_deployment_id}.{safe_action}"
-    ):
-        raise ValueError("invalid worker operation path")
+    marker = managed_path(QUEUE_DIR / f"{safe_deployment_id}.{safe_action}")
     if not marker.exists():
         atomic_text(marker, f"{safe_action}\n")
     JOBS.put((safe_action, safe_deployment_id))
@@ -1303,11 +1315,23 @@ def materialize_generic_profile(source_dir: Path, state: dict) -> None:
 
 def github_api_json(url: str) -> dict:
     """Fetch public GitHub JSON with a short timeout and no bearer credential."""
+    parsed = urllib.parse.urlparse(url)
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "api.github.com"
+        or parsed.username
+        or parsed.password
+        or parsed.port
+    ):
+        raise ValueError("GitHub API URL must use the trusted HTTPS host")
+    safe_url = urllib.parse.urlunparse(
+        ("https", "api.github.com", parsed.path, "", parsed.query, "")
+    )
     headers = {"Accept": "application/vnd.github+json", "User-Agent": "gp-cloud"}
     token = GITHUB_TOKEN or installation_token()
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    request = urllib.request.Request(url, headers=headers)
+    request = urllib.request.Request(safe_url, headers=headers)
     with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310
         value = json.load(response)
     if not isinstance(value, dict):
@@ -2803,7 +2827,10 @@ class Handler(BaseHTTPRequestHandler):
             if request_path == "/actions/gp-cloud-deploy":
                 token = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
                 repo = self.headers.get("X-GitHub-Repository", "").lower().strip()
-                if not token or not re.fullmatch(r"[^/]+/[^/]+", repo) or not allowed_repo(repo):
+                repo_match = re.fullmatch(
+                    r"[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}", repo
+                )
+                if not token or repo_match is None or not allowed_repo(repo):
                     return self.send_json(403, {"error": "GitHub Action is not authorized"})
                 address = login_rate_limit_address(self)
                 if not action_request_allowed(address):

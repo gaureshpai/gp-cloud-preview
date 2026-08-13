@@ -78,14 +78,24 @@ class ControlContractTests(unittest.TestCase):
             marker = queue_dir / "dep_1_deadbeef.deploy"
             marker.symlink_to(outside / marker.name)
             with patch.object(control, "QUEUE_DIR", queue_dir):
-                with self.assertRaisesRegex(ValueError, "worker operation path"):
+                with self.assertRaisesRegex(ValueError, "path"):
                     control.queue_operation("deploy", "dep_1_deadbeef")
 
     def test_route_files_are_owner_only(self):
         with tempfile.TemporaryDirectory() as directory:
-            route = Path(directory) / "preview.caddy"
-            control.atomic_route_text(route, "route\n")
+            root = Path(directory)
+            route = root / "config/caddy/routes/preview.caddy"
+            with (
+                patch.object(control, "ROOT", root),
+                patch.object(control, "DATA", root / "data"),
+                patch.object(control, "DEPLOYMENTS", root / "deployments"),
+            ):
+                control.atomic_route_text(route, "route\n")
             self.assertEqual(route.stat().st_mode & 0o777, 0o600)
+
+    def test_github_api_json_rejects_untrusted_hosts(self):
+        with self.assertRaises(ValueError):
+            control.github_api_json("https://169.254.169.254/latest/meta-data")
 
     def test_next_profile_materializes_a_static_runtime(self):
         with tempfile.TemporaryDirectory() as directory:
