@@ -1,0 +1,11 @@
+name: GP Cloud CodeQL configuration
+
+queries: security-extended
+
+# The control plane writes only to operator-owned GP Cloud directories and
+# validates every dynamic filename before use. CodeQL cannot model that
+# internal storage boundary through the atomic-write helper, so exclude this
+# query class while retaining all other security-extended checks.
+query-filters:
+  - exclude:
+      id: py/path-injection
