@@ -809,6 +809,9 @@ class LifecycleRegressionTests(unittest.TestCase):
     """Exercise durable lifecycle ordering without sockets, Docker, or network access."""
 
     def setUp(self):
+        """
+        Set up isolated temporary state and control-plane dependencies for a test.
+        """
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
         self.stack = ExitStack()
@@ -841,9 +844,29 @@ class LifecycleRegressionTests(unittest.TestCase):
 
     @staticmethod
     def completed(stdout="cleaned\n"):
+        """
+        Create a successful completed subprocess result with the specified standard output.
+        
+        Parameters:
+        	stdout (str): Standard output to include in the result.
+        
+        Returns:
+        	subprocess.CompletedProcess: A completed process result with return code 0.
+        """
         return subprocess.CompletedProcess([], 0, stdout=stdout)
 
     def enqueue(self, sha="a", project="site", pr_number=0):
+        """
+        Create a test deployment for the configured repository, project, and pull request.
+        
+        Parameters:
+        	sha (str): Value used to construct the commit identifier.
+        	project (str): Deployment project name.
+        	pr_number (int): Pull request number associated with the deployment.
+        
+        Returns:
+        	The enqueued deployment result.
+        """
         return control.enqueue(
             {
                 "repo_url": "https://github.com/owner/site.git",
@@ -943,6 +966,12 @@ class LifecycleRegressionTests(unittest.TestCase):
         cleaned = self.completed()
 
         def finish_build(*_args, **_kwargs):
+            """
+            Request cancellation of the deployment and report that the candidate is ready.
+            
+            Returns:
+            	tuple: A zero status code and the message ``"candidate ready\n"``.
+            """
             control.request_stop(deployment["id"])
             return 0, "candidate ready\n"
 
