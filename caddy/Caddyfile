@@ -47,7 +47,7 @@ https://*.{$GP_CLOUD_PREVIEW_DOMAIN} {
 	}
 
 	# Files contain only trusted host matchers and loopback upstream ports.
-	import /opt/gp-cloud/config/caddy/routes/*.caddy
+	import {$GP_CLOUD_CADDY_ROUTES_DIR:/opt/gp-cloud/config/caddy/routes}/*.caddy
 	respond 404
 }
 
