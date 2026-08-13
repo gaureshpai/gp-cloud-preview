@@ -156,7 +156,12 @@ def now() -> str:
 
 
 def load_settings() -> dict:
-    """Load operator settings, falling back safely when the file is absent."""
+    """
+    Load operator settings, using defaults when the settings file is missing or invalid.
+    
+    Returns:
+    	dict: Operator settings with default values applied.
+    """
     defaults = {
         "deployment_ttl_seconds": DEPLOYMENT_TTL_SECONDS,
         "max_deployment_ttl_seconds": MAX_DEPLOYMENT_TTL_SECONDS,
@@ -245,7 +250,17 @@ def vault_write_env(path: str, values: dict[str, str]) -> None:
 
 
 def validate_vault_path(value: object) -> str:
-    """Allow application secrets only below the operator-owned Vault prefix."""
+    """Validate and normalize a Vault path within the operator-owned namespace.
+    
+    Parameters:
+    	value (object): Vault path value to validate.
+    
+    Returns:
+    	str: The normalized Vault path, or an empty string for an empty value.
+    
+    Raises:
+    	ValueError: If the path contains invalid characters, traversal segments, or falls outside the configured Vault prefix.
+    """
     path = str(value or "").strip().strip("/")
     if not path:
         return ""
@@ -276,7 +291,14 @@ def atomic_json(path: Path, value: dict) -> None:
 
 
 def atomic_text(path: Path, value: str) -> None:
-    """Replace one local configuration file without exposing partial writes."""
+    """
+    Atomically replace a local text file with the specified content.
+    
+    Parameters:
+        path (Path): Destination file path.
+        value (str): Text to write.
+        mode (int): File permission mode for the replacement file.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
@@ -319,7 +341,15 @@ def preview_identity(repo: str, pr_number: int, project: str) -> tuple[str, str]
 
 
 def preview_path(preview_id: str) -> Path:
-    """Map a validated preview identifier to its durable state file."""
+    """
+    Map a preview identifier to its durable state file path.
+    
+    Raises:
+        ValueError: If `preview_id` does not match the required format.
+    
+    Returns:
+        Path: The path to the preview's state file.
+    """
     if not re.fullmatch(r"preview_[0-9a-f]{20}", preview_id):
         raise ValueError("invalid preview id")
     return PREVIEW_DIR / f"{preview_id}.json"
@@ -370,7 +400,16 @@ def write_state(state: dict) -> None:
 
 
 def update_state(deployment_id: str, **changes: object) -> dict | None:
-    """Apply a partial state transition and return the resulting record."""
+    """
+    Update fields in a deployment record and persist the changes.
+    
+    Parameters:
+        deployment_id (str): Identifier of the deployment record to update.
+        **changes (object): Field values to apply to the record.
+    
+    Returns:
+        dict | None: The updated deployment record, or `None` if it does not exist.
+    """
     with LOCK:
         state = read_state(deployment_id)
         if state is None:
@@ -381,7 +420,20 @@ def update_state(deployment_id: str, **changes: object) -> dict | None:
 
 
 def transition_state(deployment_id: str, target: str, **changes: object) -> dict | None:
-    """Apply one documented lifecycle transition and reject stale worker actions."""
+    """
+    Apply a valid deployment lifecycle transition and update the deployment record.
+    
+    Parameters:
+    	deployment_id (str): Identifier of the deployment to update
+    	target (str): Desired lifecycle state
+    	changes (object): Additional deployment fields to update
+    
+    Returns:
+    	dict | None: The updated deployment record, or `None` if the deployment does not exist
+    
+    Raises:
+    	ValueError: If the requested transition is invalid
+    """
     with LOCK:
         state = read_state(deployment_id)
         if state is None:
@@ -398,7 +450,16 @@ def transition_state(deployment_id: str, target: str, **changes: object) -> dict
 
 
 def queue_operation(action: str, deployment_id: str) -> None:
-    """Durably request a worker operation before adding it to the memory queue."""
+    """
+    Queue a deployment operation durably for worker processing.
+    
+    Parameters:
+        action (str): The operation to queue: ``deploy``, ``stop``, or ``cleanup``.
+        deployment_id (str): The deployment identifier targeted by the operation.
+    
+    Raises:
+        ValueError: If the operation or deployment identifier is invalid.
+    """
     if action not in {"deploy", "stop", "cleanup"} or not re.fullmatch(
         r"dep_[0-9]+_[0-9a-f]+", deployment_id
     ):
@@ -419,12 +480,32 @@ def repo_name(payload: dict) -> str:
 
 
 def allowed_repo(name: str) -> bool:
-    """Check the repository allowlist and fail closed when it is not configured."""
+    """
+    Determine whether a repository is permitted by the configured allowlist.
+    
+    Parameters:
+    	name (str): Repository name to check.
+    
+    Returns:
+    	bool: `true` if the allowlist is configured and contains the repository name, `false` otherwise.
+    """
     return bool(ALLOWED_REPOS) and name.lower() in ALLOWED_REPOS
 
 
 def slugify(value: str, max_length: int = 50) -> str:
-    """Convert user-controlled project text into a safe DNS/container slug."""
+    """
+    Convert project text into a lowercase DNS- and container-compatible slug.
+    
+    Parameters:
+        value (str): Project text to normalize.
+        max_length (int): Maximum length of the resulting slug.
+    
+    Returns:
+        str: A normalized slug truncated to `max_length` characters.
+    
+    Raises:
+        ValueError: If normalization produces an empty slug.
+    """
     value = re.sub(r"[^a-zA-Z0-9]+", "-", value).strip("-").lower()
     if not value:
         raise ValueError("project slug cannot be empty")
@@ -455,6 +536,18 @@ def valid_repository_name(value: str) -> bool:
 
 
 def require_sha(value: object) -> str:
+    """
+    Validate and normalize a commit SHA for immutable deployments.
+    
+    Parameters:
+    	value (object): Value expected to contain a 40-character hexadecimal commit SHA
+    
+    Returns:
+    	str: The lowercase commit SHA
+    
+    Raises:
+    	ValueError: If the value is not a 40-character hexadecimal commit SHA
+    """
     sha = str(value or "").lower()
     # Deployments are immutable. A short SHA is ambiguous after a fetch and
     # cannot prove that the image was built from the requested commit.
@@ -489,12 +582,14 @@ def validate_health_path(value: object) -> str:
 
 
 def normalize_job(body: dict) -> dict:
-    """Validate a deployment request and return only safe, normalized fields.
-
-    The browser and webhook are untrusted callers. Keeping this validation at
-    the control-plane boundary prevents a caller from smuggling shell syntax,
-    an arbitrary filesystem path, or an unrestricted Vault path into the
-    privileged worker.
+    """
+    Validate and normalize an untrusted deployment request.
+    
+    Parameters:
+    	body (dict): Deployment request data containing repository, commit, project, port, health-check, Vault, and TTL settings.
+    
+    Returns:
+    	dict: Normalized deployment data with validated repository and commit identifiers, preview identity, runtime settings, and expiration metadata.
     """
     repo_url = str(body.get("repo_url") or body.get("repository_url") or "")
     repo = github_repo_from_url(repo_url)
@@ -541,7 +636,17 @@ def normalize_job(body: dict) -> dict:
 
 
 def enqueue(body: dict, source: str, clone_token: str = "") -> dict:
-    """Create one historical deployment under a stable preview environment."""
+    """
+    Create a queued deployment generation within a stable preview environment.
+    
+    Parameters:
+    	body (dict): Deployment configuration to normalize and enqueue.
+    	source (str): Origin of the deployment request.
+    	clone_token (str): Optional credential used to clone the repository.
+    
+    Returns:
+    	dict: The newly created deployment state.
+    """
     if sum(1 for item in QUEUE_DIR.glob("*.deploy") if item.is_file()) >= MAX_QUEUE_DEPTH:
         raise DeploymentQueueFull("deployment queue is full")
     job = normalize_job(body)
@@ -739,7 +844,19 @@ def host_config_summary() -> dict:
 
 
 def validate_host_config_value(name: str, value: str) -> str:
-    """Validate dashboard-editable environment data before systemd or shell reads it."""
+    """
+    Validate a dashboard-editable environment value for safe systemd or shell use.
+    
+    Parameters:
+    	name (str): Environment variable name whose value is being validated.
+    	value (str): Proposed environment variable value.
+    
+    Returns:
+    	str: The validated value.
+    
+    Raises:
+    	ValueError: If the value contains unsupported characters or violates the setting's format or range.
+    """
     if not re.fullmatch(r"[A-Za-z0-9_./,:=@%+-]{0,500}", value):
         raise ValueError(f"{name} contains unsupported characters")
     if name in {
@@ -791,11 +908,18 @@ def validate_host_config_value(name: str, value: str) -> str:
 
 
 def save_host_config(values: object) -> dict:
-    """Update only non-secret supported env settings in the live local file.
-
-    Credentials remain deliberately outside the browser editor. This function
-    also rejects shell metacharacters carried across lines; values are stored
-    as data and are never evaluated by this process.
+    """
+    Update supported non-secret host settings in the local configuration file.
+    
+    Parameters:
+        values (object): Mapping of supported setting names to their values.
+    
+    Returns:
+        dict: Summary of the resulting host configuration.
+    
+    Raises:
+        ValueError: If values is not a mapping.
+        PermissionError: If a setting is unsupported or secret.
     """
     if not isinstance(values, dict):
         raise ValueError("values must be an object")
@@ -846,11 +970,11 @@ def directory_bytes(path: Path) -> int:
 
 
 def usage_metrics() -> dict:
-    """Return detailed resource data scoped to GP Cloud-owned paths.
-
-    Docker stats are queried by container name and the filesystem walk starts
-    at ``ROOT``. No host-wide scan, arbitrary path supplied by a request, or
-    container filesystem is exposed to the dashboard.
+    """
+    Collects deployment, storage, queue, container, and configured resource-limit metrics for the dashboard.
+    
+    Returns:
+    	dict: Resource and deployment usage metrics scoped to the GP Cloud root and managed containers.
     """
     disk = shutil.disk_usage(ROOT)
     states: dict[str, int] = {}
@@ -908,7 +1032,13 @@ def usage_metrics() -> dict:
 
 
 def purge_all_deployments() -> dict:
-    """Request active stops and purge only records already in terminal states."""
+    """
+    Request stops for active deployments and purge eligible terminal deployment records.
+    
+    Returns:
+    	dict: Counts of stop requests, purged records, orphaned deployment metadata,
+    	and pending cleanups, plus whether any work remains pending.
+    """
     stopped = 0
     purged = 0
     cleanup_pending = 0
@@ -959,7 +1089,12 @@ def purge_all_deployments() -> dict:
 
 
 def stop_all_deployments() -> int:
-    """Request cleanup for every active state record through the worker."""
+    """
+    Request stops for all active deployments.
+    
+    Returns:
+        int: Number of deployments for which a stop request was recorded.
+    """
     stopped = 0
     for record in deployment_records():
         deployment_id = str(record.get("id") or "")
@@ -1038,7 +1173,16 @@ def materialize_profile(source_dir: Path, state: dict) -> None:
 
 
 def detect_runtime_profile(source_dir: Path, state: dict) -> dict:
-    """Apply explicit project settings, then detect safe generic runtimes."""
+    """
+    Detect and assign a supported runtime profile from project files.
+    
+    Parameters:
+        source_dir (Path): Directory containing the project files.
+        state (dict): Deployment state, including any explicitly configured runtime.
+    
+    Returns:
+        dict: The deployment state with a detected runtime when none was configured.
+    """
     if (source_dir / "Dockerfile").exists():
         state.setdefault("runtime", "dockerfile")
     elif (source_dir / "uv.lock").exists() and (source_dir / "pyproject.toml").exists():
@@ -1053,7 +1197,14 @@ def detect_runtime_profile(source_dir: Path, state: dict) -> dict:
 
 
 def approved_runtime_vault_path(state: dict) -> str:
-    """Return a Vault path only after explicit double opt-in for untrusted PR source."""
+    """Return the Vault path approved for runtime use by the deployment.
+    
+    Parameters:
+        state (dict): Deployment state containing the Vault path and pull-request secret approval.
+    
+    Returns:
+        str: The approved Vault path, or an empty string when pull-request secret access lacks explicit approval.
+    """
     path = str(state.get("vault_path") or "")
     if int(state.get("pr_number") or 0) and not (
         ALLOW_PR_SECRETS and state.get("allow_pr_secrets") is True
@@ -1063,7 +1214,15 @@ def approved_runtime_vault_path(state: dict) -> str:
 
 
 def approved_build_network(state: dict) -> str:
-    """Permit Dockerfile egress only after the required operator approvals."""
+    """
+    Determine the permitted Docker build network mode for a deployment.
+    
+    Parameters:
+        state (dict): Deployment state containing network approval and pull request information.
+    
+    Returns:
+        str: ``"default"`` when build network access is approved; ``"none"`` otherwise.
+    """
     if state.get("allow_build_network") is not True:
         return "none"
     if int(state.get("pr_number") or 0) and not ALLOW_PR_BUILD_NETWORK:
@@ -1072,10 +1231,16 @@ def approved_build_network(state: dict) -> str:
 
 
 def materialize_generic_profile(source_dir: Path, state: dict) -> None:
-    """Generate a conservative Dockerfile for lockfile-based applications.
-
-    A start command is required for non-static generic apps; guessing one for
-    arbitrary repositories would produce a deceptively healthy deployment.
+    """
+    Generate a Dockerfile for supported generic Python and JavaScript applications.
+    
+    Parameters:
+        source_dir (Path): Directory where the Dockerfile is created.
+        state (dict): Deployment configuration containing the runtime, start command,
+            and optional build command.
+    
+    Raises:
+        ValueError: If a generic Python deployment does not define a start command.
     """
     if (source_dir / "Dockerfile").exists():
         return
@@ -1146,7 +1311,19 @@ def github_api_json(url: str) -> dict:
 
 
 def github_api_json_with_token(url: str, token: str) -> dict:
-    """Fetch GitHub JSON using a caller-provided token without exposing it in logs."""
+    """
+    Fetch a GitHub API JSON object using a caller-provided access token.
+    
+    Parameters:
+    	url (str): GitHub API URL to request
+    	token (str): Access token for authenticating the request
+    
+    Returns:
+    	dict: Parsed GitHub API response
+    
+    Raises:
+    	ValueError: If GitHub returns a JSON value that is not an object
+    """
     request = urllib.request.Request(
         url,
         headers={
@@ -1163,7 +1340,16 @@ def github_api_json_with_token(url: str, token: str) -> dict:
 
 
 def action_token_allows_repo(token: str, repo: str) -> bool:
-    """Require a repository-scoped GitHub installation token, not an arbitrary PAT."""
+    """
+    Determine whether a GitHub token grants access to a repository.
+    
+    Parameters:
+    	token (str): GitHub installation token to validate.
+    	repo (str): Repository full name in `owner/name` format.
+    
+    Returns:
+    	bool: `True` if the token can access the repository, `False` otherwise.
+    """
     try:
         installation = github_api_json_with_token(
             "https://api.github.com/installation/repositories?per_page=100", token
@@ -1178,7 +1364,17 @@ def action_token_allows_repo(token: str, repo: str) -> bool:
 
 
 def github_api_write(method: str, url: str, payload: dict) -> dict:
-    """Send a bounded GitHub API mutation with the configured installation credential."""
+    """
+    Send a mutation request to the GitHub API using the configured installation credential.
+    
+    Parameters:
+    	method (str): HTTP method for the mutation.
+    	url (str): GitHub API endpoint.
+    	payload (dict): JSON request body.
+    
+    Returns:
+    	dict: Parsed JSON object returned by GitHub, or an empty dictionary when no credential is available or the response is not an object.
+    """
     token = GITHUB_TOKEN or installation_token()
     if not token:
         return {}
@@ -1199,7 +1395,13 @@ def github_api_write(method: str, url: str, payload: dict) -> dict:
 
 
 def update_github_status(state: dict, status: str) -> None:
-    """Create or update one PR status comment without publishing candidate URLs."""
+    """
+    Create or update a pull request comment with the deployment status and current preview URL.
+    
+    Parameters:
+        state (dict): Deployment state containing the pull request number, repository, and preview identity.
+        status (str): Status text to publish.
+    """
     pr_number = int(state.get("pr_number") or 0)
     if pr_number <= 0:
         return
@@ -1303,7 +1505,15 @@ def render_route(state: dict, host_port: int) -> str:
 
 
 def activate_route(state: dict) -> None:
-    """Atomically publish a healthy candidate and roll back a failed reload."""
+    """
+    Publish the deployment's route and reload the managed proxy when active.
+    
+    If validation or reloading fails, restore the previous route configuration and
+    propagate the error.
+    
+    Parameters:
+    	state (dict): Deployment state containing the runtime slug and route details.
+    """
     metadata_path = DEPLOYMENTS / state["runtime_slug"] / "metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     host_port = int(metadata.get("host_port") or 0)
@@ -1367,7 +1577,20 @@ def clean_runtime(state: dict, keep_route: bool) -> subprocess.CompletedProcess[
 
 
 def run_worker_command(command: list[str], output_path: Path, timeout: int) -> tuple[int, str]:
-    """Run a build in its own process group and retain only bounded output in memory."""
+    """
+    Run a command in an isolated process group and return its exit status and bounded output.
+    
+    Parameters:
+        command (list[str]): Command and arguments to execute.
+        output_path (Path): File used to retain the command's combined standard output and error.
+        timeout (int): Maximum execution time in seconds.
+    
+    Returns:
+        tuple[int, str]: The process exit status and the final 200,000 characters of output.
+    
+    Raises:
+        RuntimeError: If the command exceeds the specified timeout.
+    """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as output:
         process = subprocess.Popen(
@@ -1392,7 +1615,19 @@ def run_worker_command(command: list[str], output_path: Path, timeout: int) -> t
 
 
 def promote_deployment(deployment_id: str) -> dict:
-    """Promote a healthy candidate, then supersede its former current deployment."""
+    """
+    Promote a healthy deployment to become the current preview generation.
+    
+    Parameters:
+        deployment_id (str): Identifier of the candidate deployment to promote.
+    
+    Returns:
+        dict: The promoted deployment state.
+    
+    Raises:
+        RuntimeError: If the deployment or its preview cannot be found during promotion.
+        DeploymentStopRequested: If stopping was requested before promotion.
+    """
     with LOCK:
         state = read_state(deployment_id)
         preview = read_preview(state["preview_id"]) if state else None
@@ -1458,7 +1693,12 @@ def promote_deployment(deployment_id: str) -> dict:
 
 
 def run_deployment(deployment_id: str) -> None:
-    """Build and health-check one candidate without disturbing the current preview."""
+    """
+    Build and deploy a queued candidate, promoting it only after it passes its health check.
+    
+    Parameters:
+    	deployment_id (str): Identifier of the deployment to process.
+    """
     state = read_state(deployment_id)
     if not state or state.get("state") not in {"QUEUED", "BUILDING"}:
         return
@@ -1631,7 +1871,14 @@ def run_deployment(deployment_id: str) -> None:
 
 
 def request_stop(deployment_id: str) -> dict | None:
-    """Durably request a stop; only the worker performs lifecycle side effects."""
+    """Queue a durable request to stop a deployment.
+    
+    Parameters:
+        deployment_id (str): Identifier of the deployment to stop.
+    
+    Returns:
+        dict | None: The deployment state after the request, or `None` if the deployment does not exist.
+    """
     state = read_state(deployment_id)
     if not state:
         return None
@@ -1643,7 +1890,15 @@ def request_stop(deployment_id: str) -> dict | None:
 
 
 def perform_stop(deployment_id: str) -> dict | None:
-    """Idempotently stop one runtime from the serialized worker context."""
+    """
+    Stop a deployment runtime and update its lifecycle and preview state.
+    
+    Parameters:
+    	deployment_id (str): Identifier of the deployment to stop.
+    
+    Returns:
+    	dict | None: The updated deployment state, or `None` if the deployment does not exist.
+    """
     state = read_state(deployment_id)
     if not state:
         return None
@@ -1736,7 +1991,7 @@ def worker_loop() -> None:
 
 
 def cleanup_loop() -> None:
-    """Enforce TTLs independently of the terminal, webhook, and UI."""
+    """Request stops for active deployments whose configured TTL has expired."""
     while not STOP.wait(60):
         for path in STATE_DIR.glob("dep_*.json"):
             try:
@@ -1772,7 +2027,11 @@ def backfill_expirations() -> None:
 
 
 def reconcile_durable_state() -> None:
-    """Migrate legacy records and rebuild durable work after an interrupted process."""
+    """
+    Rebuild durable deployment state and queue work after a process interruption.
+    
+    Migrates legacy deployment records, restores preview pointers and lifecycle metadata, and requeues pending deployment, stop, and cleanup operations.
+    """
     def queue_reconciled(action: str, deployment_id: str) -> None:
         """Skip one malformed legacy operation without aborting startup recovery."""
         try:
@@ -1822,6 +2081,15 @@ def reconcile_durable_state() -> None:
         def lifecycle_order(
             item: dict, order: dict[str, int] = persisted_order
         ) -> tuple[int, int, str, str]:
+            """Create a sortable key for ordering deployment records by persisted order or generation metadata.
+            
+            Parameters:
+            	item (dict): Deployment record containing its identifier and ordering metadata.
+            	order (dict[str, int]): Persisted deployment ordering keyed by deployment identifier.
+            
+            Returns:
+            	tuple[int, int, str, str]: A sorting key containing the ordering category, sequence or generation, creation timestamp, and deployment identifier.
+            """
             deployment_id = str(item.get("id") or "")
             if deployment_id in order:
                 return (0, order[deployment_id], "", deployment_id)
@@ -1906,14 +2174,32 @@ def reconcile_durable_state() -> None:
 
 
 def verify_signature(handler: BaseHTTPRequestHandler, body: bytes) -> bool:
-    """Verify GitHub's HMAC signature using constant-time comparison."""
+    """
+    Validate the GitHub webhook signature for a request payload.
+    
+    Parameters:
+        body (bytes): The raw webhook request body.
+    
+    Returns:
+        bool: `true` if the signature matches the configured webhook secret, `false` otherwise.
+    """
     signature = handler.headers.get("X-Hub-Signature-256", "")
     expected = "sha256=" + hmac.new(WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
     return bool(WEBHOOK_SECRET) and hmac.compare_digest(signature, expected)
 
 
 def claim_webhook_delivery(delivery_id: str, event: str, body: bytes) -> tuple[Path, Path] | None:
-    """Claim both GitHub's ID and the signed event/body digest against replay."""
+    """
+    Claim a webhook delivery ID and payload digest for replay protection.
+    
+    Parameters:
+    	delivery_id (str): GitHub delivery identifier.
+    	event (str): Webhook event name.
+    	body (bytes): Signed webhook payload.
+    
+    Returns:
+    	tuple[Path, Path] | None: Paths for the claimed delivery ID and payload digest, or `None` if the identifier is invalid or either claim already exists.
+    """
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", delivery_id):
         return None
     DELIVERY_DIR.mkdir(parents=True, exist_ok=True)
@@ -1947,7 +2233,18 @@ def release_webhook_claim(claim: tuple[Path, Path]) -> None:
 
 
 def parse_deploy_command(comment: str) -> tuple[str, str | None]:
-    """Parse only a standalone, lowercase ``/deploy`` command."""
+    """
+    Classify a deployment command from a comment.
+    
+    Parameters:
+        comment (str): Comment text to inspect.
+    
+    Returns:
+        tuple[str, str | None]: A status and optional message. The status is
+        ``"deploy"`` for an exact ``/deploy`` command, ``"unsupported"`` for
+        ``/deploy`` followed by arguments, and ``"ignore"`` for other comments.
+    """
+  
     trimmed = comment.strip(" \t")
     if trimmed == "/deploy":
         return "deploy", None
@@ -1957,7 +2254,15 @@ def parse_deploy_command(comment: str) -> tuple[str, str | None]:
 
 
 def valid_ui_origin(handler: BaseHTTPRequestHandler) -> bool:
-    """Reject same-site cross-origin dashboard mutations from preview applications."""
+    """
+    Validate that a request's origin matches its Host header.
+    
+    Parameters:
+    	handler (BaseHTTPRequestHandler): Request handler containing the Origin and Host headers.
+    
+    Returns:
+    	bool: True if the Origin header is absent or uses HTTP(S) with a matching host, false otherwise.
+    """
     origin = handler.headers.get("Origin", "")
     if not origin:
         return True
@@ -1966,7 +2271,15 @@ def valid_ui_origin(handler: BaseHTTPRequestHandler) -> bool:
 
 
 def login_rate_limit_address(handler: BaseHTTPRequestHandler) -> str:
-    """Use the edge-provided client address only over a loopback proxy hop."""
+    """
+    Determine the client address used for login rate limiting.
+    
+    Parameters:
+        handler (BaseHTTPRequestHandler): Request handler containing the peer address and headers.
+    
+    Returns:
+        str: The validated forwarded client address for loopback proxy requests, or the direct peer address.
+    """
     peer = str(handler.client_address[0])
     try:
         peer_address = ipaddress.ip_address(peer)
@@ -1988,7 +2301,14 @@ def admin_password_matches(value: str) -> bool:
 
 
 def login_allowed(address: str) -> bool:
-    """Bound password attempts per source address in a rolling five-minute window."""
+    """Determine whether another password attempt is allowed for a source address.
+    
+    Parameters:
+    	address (str): Source address associated with the login attempts.
+    
+    Returns:
+    	bool: `true` if fewer than 10 failed attempts occurred for the address in the preceding five minutes, `false` otherwise.
+    """
     cutoff = time.time() - 300
     with SESSION_LOCK:
         for source in list(LOGIN_FAILURES):
@@ -2045,6 +2365,7 @@ def ui_session(handler: BaseHTTPRequestHandler) -> bool:
 
 
 def ui_html() -> str:
+    """Generate the authenticated single-page dashboard HTML for deployment operations, configuration, Vault management, and usage monitoring."""
     return """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>GP Cloud Preview</title><style>
@@ -2077,6 +2398,16 @@ def login_html() -> str:
 
 
 def github_event(payload: dict, event: str) -> dict | None:
+    """
+    Handle authorized GitHub issue-comment deployment requests and pull-request closure cleanup.
+    
+    Parameters:
+    	payload (dict): GitHub event payload.
+    	event (str): GitHub event type.
+    
+    Returns:
+    	dict | None: Deployment details or an error response for issue-comment events; otherwise, `None`.
+    """
     repo = repo_name(payload)
     if not allowed_repo(repo):
         raise PermissionError("repository is not allowlisted")
@@ -2139,7 +2470,7 @@ class Handler(BaseHTTPRequestHandler):
         return
 
     def send_json(self, status: int, value: object) -> None:
-        """Send a non-cacheable API response with browser hardening headers."""
+        """Send a non-cacheable JSON response with browser security headers."""
         data = json.dumps(value).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -2195,7 +2526,11 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def do_GET(self) -> None:
-        """Route health, metrics, dashboard, action-status, and deployment reads."""
+        """
+        Route health checks, metrics, dashboard data, action status, and deployment data requests.
+        
+        Requires UI authentication for dashboard APIs and API authentication for detailed deployment and log requests. Public deployment listings expose summaries, while authorized requests expose deployment details.
+        """
         request_path = urllib.parse.urlsplit(self.path).path
         if request_path == "/ui/login":
             return self.send_html(200, login_html())
@@ -2322,7 +2657,12 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_json(200, public_action_state(state))
 
     def do_POST(self) -> None:
-        """Route authenticated mutations, webhooks, and GitHub Action requests."""
+        """
+        Route dashboard mutations, GitHub webhooks, Action deployment requests, and authenticated deployment API operations.
+        
+        Returns:
+            None
+        """
         try:
             body = self.body()
             request_path = urllib.parse.urlsplit(self.path).path
