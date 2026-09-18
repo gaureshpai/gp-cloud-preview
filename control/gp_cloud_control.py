@@ -1146,6 +1146,7 @@ def project_profile(state: dict) -> dict:
             "start_command",
             "build_command",
             "vault_path",
+            "runtime_env_file",
             "allow_pr_secrets",
             "allow_build_network",
         )
@@ -1164,6 +1165,11 @@ def project_profile(state: dict) -> dict:
         changes["health_path"] = validate_health_path(changes["health_path"])
     if "vault_path" in changes:
         changes["vault_path"] = validate_vault_path(changes["vault_path"])
+    if "runtime_env_file" in changes:
+        filename = str(changes["runtime_env_file"] or "").strip()
+        if filename and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,100}\.env", filename):
+            raise ValueError("runtime_env_file must be a simple .env filename")
+        changes["runtime_env_file"] = filename
     if "allow_pr_secrets" in changes and not isinstance(changes["allow_pr_secrets"], bool):
         raise ValueError("allow_pr_secrets must be a boolean")
     if "allow_build_network" in changes and not isinstance(changes["allow_build_network"], bool):
@@ -1229,6 +1235,23 @@ def approved_runtime_vault_path(state: dict) -> str:
     ):
         return ""
     return path
+
+
+def approved_runtime_env_file(state: dict) -> Path | None:
+    """Resolve a root-managed runtime env file scoped to the operator config."""
+    filename = str(state.get("runtime_env_file") or "").strip()
+    if not filename:
+        return None
+    if int(state.get("pr_number") or 0) and not (
+        ALLOW_PR_SECRETS and state.get("allow_pr_secrets") is True
+    ):
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,100}\.env", filename):
+        raise ValueError("runtime_env_file must be a simple .env filename")
+    env_file = ROOT / "config" / "runtime-env" / filename
+    if env_file.is_symlink() or not env_file.is_file():
+        raise ValueError("configured runtime env file is missing or unsafe")
+    return env_file
 
 
 def approved_build_network(state: dict) -> str:
@@ -1842,6 +1865,9 @@ def run_deployment(deployment_id: str) -> None:
             return
         env_file: Path | None = None
         vault_path = approved_runtime_vault_path(state)
+        configured_env_file = approved_runtime_env_file(state)
+        if vault_path and configured_env_file:
+            raise ValueError("configure either vault_path or runtime_env_file, not both")
         if state.get("vault_path") and not vault_path:
             append_log(
                 state,
@@ -1853,6 +1879,10 @@ def run_deployment(deployment_id: str) -> None:
             env_file.write_text(
                 "".join(f"{key}={value}\n" for key, value in values.items()), encoding="utf-8"
             )
+            env_file.chmod(0o600)
+        elif configured_env_file:
+            env_file = workspace / ".runtime.env"
+            shutil.copyfile(configured_env_file, env_file)
             env_file.chmod(0o600)
         command = [
             str(WORKER),

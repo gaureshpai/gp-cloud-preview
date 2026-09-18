@@ -192,13 +192,16 @@ rootless, isolated builder or per-job VM before accepting untrusted public
 contributors. Read [SECURITY.md](docs/SECURITY.md) before enabling a public
 edge.
 
-Application runtime secrets are read from an operator-limited Vault KV v2 path
-below `gp-cloud/`, written to a temporary mode-0600 env file, and deleted after
-container start. Pull-request deployments receive none by default. PR secrets
-require a canonical `owner/repository` profile with `allow_pr_secrets: true`
-and the host-wide `GP_CLOUD_ALLOW_PR_SECRETS=true`; use only disposable preview
-credentials. Docker retains container environment values for the runtime
-lifetime, so host-root/Docker-daemon access remains trusted.
+Application runtime secrets can be read from an operator-limited Vault KV v2
+path below `gp-cloud/`, or from a root-managed file below
+`/opt/gp-cloud/config/runtime-env/`. Both are copied to a temporary mode-0600
+env file and deleted after container start. A project profile may set
+`runtime_env_file` to a simple filename such as `whisker.env`. Pull-request
+deployments receive no secrets by default. PR secrets require a canonical
+`owner/repository` profile with `allow_pr_secrets: true` and the host-wide
+`GP_CLOUD_ALLOW_PR_SECRETS=true`; use only disposable preview credentials.
+Docker retains container environment values for the runtime lifetime, so
+host-root/Docker-daemon access remains trusted.
 
 ## Development
 

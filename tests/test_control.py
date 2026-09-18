@@ -1004,6 +1004,31 @@ class LifecycleRegressionTests(unittest.TestCase):
             {},
         )
 
+    def test_runtime_env_file_is_repo_pr_secret_gated_and_confined(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env_dir = root / "config/runtime-env"
+            env_dir.mkdir(parents=True)
+            env_file = env_dir / "whisker.env"
+            env_file.write_text("APP_MODE=dev\n", encoding="utf-8")
+            env_file.chmod(0o600)
+            state = {"runtime_env_file": "whisker.env", "pr_number": 29, "allow_pr_secrets": True}
+            with (
+                patch.object(control, "ROOT", root),
+                patch.object(control, "ALLOW_PR_SECRETS", True),
+            ):
+                self.assertEqual(control.approved_runtime_env_file(state), env_file)
+                self.assertIsNone(
+                    control.approved_runtime_env_file({**state, "allow_pr_secrets": False})
+                )
+                with self.assertRaisesRegex(ValueError, "simple .env filename"):
+                    control.approved_runtime_env_file({**state, "runtime_env_file": "../outside.env"})
+                outside = root / "outside.env"
+                outside.write_text("LEAK=1\n", encoding="utf-8")
+                (env_dir / "link.env").symlink_to(outside)
+                with self.assertRaisesRegex(ValueError, "missing or unsafe"):
+                    control.approved_runtime_env_file({**state, "runtime_env_file": "link.env"})
+
     def test_existing_preview_slug_is_preserved_for_redeploy(self):
         preview_id, _generated_slug = control.preview_identity("owner/site", 7, "site")
         legacy_slug = "legacy-site-pr-7"
