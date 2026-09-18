@@ -317,10 +317,8 @@ class ControlContractTests(unittest.TestCase):
 printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
 if [[ "$1" == "image" && "${2:-}" == "inspect" ]]; then
   echo null
-elif [[ "$1" == "port" ]]; then
-  echo 127.0.0.1:31001
 elif [[ "$1" == "inspect" ]]; then
-  echo true
+  if [[ "$*" == *NetworkSettings* ]]; then echo 172.19.0.2; else echo true; fi
 elif [[ "$1" == "run" ]]; then
   echo fake-container-id
 fi
@@ -383,7 +381,23 @@ value=${value%\\^\\{commit\\}}
                         commands,
                     )
                     self.assertIn("--network none", commands)
+                    self.assertNotIn("--publish", commands)
+                    self.assertNotIn("docker port", commands)
                     self.assertTrue((test_root / "deployments" / slug / "metadata.json").exists())
+
+    def test_routes_proxy_to_private_container_ip(self):
+        route = control.render_route(
+            {"preview_id": "preview_test", "preview_slug": "whisker-pr-29"},
+            "172.19.0.2",
+            8080,
+        )
+        self.assertIn("reverse_proxy 172.19.0.2:8080", route)
+        with self.assertRaisesRegex(RuntimeError, "private IPv4"):
+            control.render_route(
+                {"preview_id": "preview_test", "preview_slug": "whisker-pr-29"},
+                "8.8.8.8",
+                8080,
+            )
 
     def test_optional_monitoring_enable_disable_and_uninstall(self):
         root = Path(__file__).parents[1]

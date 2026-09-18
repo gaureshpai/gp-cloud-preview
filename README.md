@@ -171,7 +171,7 @@ disable, and uninstall behavior.
 ## Isolation and security
 
 Runtime containers have no Docker socket or host mounts. They use unique
-internal networks, loopback-only published ports, read-only root filesystems,
+internal networks with no published host ports, read-only root filesystems,
 all capabilities dropped, `no-new-privileges`, CPU/memory/PID/ulimit bounds,
 and bounded local Docker logs. Build and runtime artifacts cannot collide
 between deployment attempts.

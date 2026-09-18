@@ -116,11 +116,21 @@ docker run -d --name "$CONTAINER" --network "$NETWORK" \
   --read-only --tmpfs /tmp:rw,noexec,nosuid,size=128m \
   --log-driver local --log-opt max-size=10m --log-opt max-file=3 \
   --stop-timeout 10 \
-  --restart unless-stopped "${ENV_ARGS[@]}" --publish "127.0.0.1::${APP_PORT}" "$IMAGE" \
+  --restart unless-stopped "${ENV_ARGS[@]}" "$IMAGE" \
   > "$LOGS/container-id"
 
-HOST_PORT=$(docker port "$CONTAINER" "$APP_PORT/tcp" | sed -E 's/.*:([0-9]+)$/\1/' | head -1)
-[[ "$HOST_PORT" =~ ^[0-9]+$ ]] || { echo "could not determine published port"; exit 1; }
+CONTAINER_IP=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$NETWORK\").IPAddress}}" "$CONTAINER")
+python3 - "$CONTAINER_IP" <<'PY'
+import ipaddress
+import sys
+
+try:
+    address = ipaddress.ip_address(sys.argv[1])
+except ValueError:
+    raise SystemExit("container did not receive a valid network IP")
+if address.version != 4 or not address.is_private:
+    raise SystemExit("container network IP must be a private IPv4 address")
+PY
 
 deadline=$((SECONDS + STARTUP_TIMEOUT))
 while ! docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null | grep -qx true; do
@@ -129,14 +139,14 @@ while ! docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null | grep -
 done
 
 deadline=$((SECONDS + HEALTH_TIMEOUT))
-URL="http://127.0.0.1:${HOST_PORT}${HEALTH_PATH}"
+URL="http://${CONTAINER_IP}:${APP_PORT}${HEALTH_PATH}"
 until curl --fail --silent --show-error --max-time 3 "$URL" >/dev/null; do
   (( SECONDS >= deadline )) && { echo "health check failed: $URL"; docker logs "$CONTAINER"; exit 1; }
   sleep 1
 done
 
 python3 - "$DEPLOYMENTS/$SLUG/metadata.json" "$SLUG" "$CHECKED_OUT" "$IMAGE" \
-  "$CONTAINER" "$NETWORK" "$APP_PORT" "$HOST_PORT" "$URL" "$(date -Is)" <<'PY'
+  "$CONTAINER" "$NETWORK" "$APP_PORT" "$CONTAINER_IP" "$URL" "$(date -Is)" <<'PY'
 import json
 import sys
 
@@ -148,7 +158,7 @@ import sys
     container,
     network,
     app_port,
-    host_port,
+    container_ip,
     health_url,
     created_at,
 ) = sys.argv[1:]
@@ -161,7 +171,7 @@ with open(output, "w", encoding="utf-8") as handle:
             "container": container,
             "network": network,
             "app_port": int(app_port),
-            "host_port": int(host_port),
+            "container_ip": container_ip,
             "health_url": health_url,
             "state": "READY",
             "created_at": created_at,

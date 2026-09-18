@@ -1526,14 +1526,22 @@ def route_path(state: dict) -> Path:
     return ROOT / "config" / "caddy" / "routes" / f"{state['preview_slug']}.caddy"
 
 
-def render_route(state: dict, host_port: int) -> str:
-    """Render one host matcher imported by the wildcard HTTPS server."""
+def render_route(state: dict, upstream_host: str, upstream_port: int) -> str:
+    """Render one host matcher that proxies to a private container address."""
+    try:
+        address = ipaddress.ip_address(upstream_host)
+    except ValueError as error:
+        raise RuntimeError("deployment metadata contains an invalid upstream IP") from error
+    if address.version != 4 or not address.is_private:
+        raise RuntimeError("deployment upstream must be a private IPv4 address")
+    if not 1 <= upstream_port <= 65535:
+        raise RuntimeError("deployment metadata contains an invalid app port")
     matcher = "preview_" + hashlib.sha256(state["preview_id"].encode()).hexdigest()[:12]
     hostname = f"{state['preview_slug']}.{PREVIEW_DOMAIN}"
     return (
         f"@{matcher} host {hostname}\n"
         f"handle @{matcher} {{\n"
-        f"\treverse_proxy 127.0.0.1:{host_port}\n"
+        f"\treverse_proxy {address}:{upstream_port}\n"
         f"}}\n"
     )
 
@@ -1550,14 +1558,19 @@ def activate_route(state: dict) -> None:
     """
     metadata_path = DEPLOYMENTS / state["runtime_slug"] / "metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    host_port = int(metadata.get("host_port") or 0)
-    if not 1 <= host_port <= 65535:
-        raise RuntimeError("deployment metadata contains an invalid host port")
+    # Legacy previews used loopback published ports; current deployments keep
+    # their app network internal and let the host proxy reach its private IP.
+    upstream_host = str(metadata.get("container_ip") or "127.0.0.1")
+    upstream_port = int(metadata.get("app_port") or 0)
+    if not metadata.get("container_ip"):
+        upstream_port = int(metadata.get("host_port") or 0)
     path = route_path(state)
     previous = path.read_text(encoding="utf-8") if path.exists() else None
     route_directory = ROOT / "config" / "caddy" / "routes"
     route_filename = safe_filename(f"{state['preview_slug']}.caddy")
-    atomic_route_text(route_directory, route_filename, render_route(state, host_port))
+    atomic_route_text(
+        route_directory, route_filename, render_route(state, upstream_host, upstream_port)
+    )
     try:
         active = CADDY_MANAGED_MARKER.is_file() and (
             subprocess.run(  # noqa: S603, S607

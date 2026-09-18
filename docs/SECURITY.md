@@ -42,7 +42,8 @@ remove the healthy current runtime.
 Runtime containers receive:
 
 - no Docker socket, host bind mount, privileged mode, or shared app network;
-- a loopback-only dynamically published application port;
+- no published host port; Caddy reaches the app over its deployment-only
+  internal Docker network using the container's private IPv4 address;
 - all capabilities dropped and `no-new-privileges`;
 - read-only root filesystem and bounded noexec temporary storage;
 - CPU, memory/swap, PID, open-file/process, and Docker log limits.

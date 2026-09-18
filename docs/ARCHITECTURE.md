@@ -41,7 +41,8 @@ same idempotent cleanup path.
 ## Redeploy transaction
 
 1. Create a candidate deployment with a unique workspace, log directory,
-   image, container, and internal Docker network.
+   image, container, and internal Docker network. Caddy proxies to the
+   container's private IP without publishing an application port on the host.
 2. Leave the current container and route unchanged while cloning, building,
    starting, and health-checking the candidate.
 3. Write the candidate promotion phase and atomically replace the stable route.
