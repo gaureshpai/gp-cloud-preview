@@ -50,9 +50,10 @@ Create an A/AAAA wildcard record such as:
 *.preview.example.com -> public VM address
 ```
 
-Install/build Caddy with the `github.com/caddy-dns/cloudflare` module. Create a
-Cloudflare API token restricted to DNS edit/read for only this zone. Configure
-`gp-cloud.env`:
+Install/build Caddy with the DNS provider module for the authoritative DNS
+provider. For Cloudflare use `github.com/caddy-dns/cloudflare`; for GoDaddy use
+`github.com/caddy-dns/godaddy`. Create DNS API credentials limited to this
+zone. Configure `gp-cloud.env`:
 
 ```dotenv
 GP_CLOUD_PREVIEW_DOMAIN=preview.example.com
@@ -61,13 +62,16 @@ GP_CLOUD_HTTP_PORT=443
 GP_CLOUD_COOKIE_SECURE=true
 ```
 
-Configure edge-only `/opt/gp-cloud/config/caddy.env`:
+Configure edge-only `/opt/gp-cloud/config/caddy.env`. For GoDaddy, set the
+credential to `<API key>:<API secret>`; for Cloudflare, set it to the
+zone-limited API token:
 
 ```dotenv
 GP_CLOUD_PREVIEW_DOMAIN=preview.example.com
 GP_CLOUD_CONTROL_PORT=8787
 GP_CLOUD_CADDY_ACME_EMAIL=operator@example.com
-GP_CLOUD_CLOUDFLARE_API_TOKEN=<zone-limited-token>
+GP_CLOUD_DNS_PROVIDER=godaddy
+GP_CLOUD_DNS_CREDENTIAL=<api-key>:<api-secret>
 ```
 
 Rerun the explicit public installer path:

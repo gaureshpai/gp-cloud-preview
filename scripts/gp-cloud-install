@@ -81,7 +81,12 @@ if [[ "$ENABLE_PUBLIC_EDGE" == "1" ]]; then
   GP_CLOUD_PREVIEW_DOMAIN=$(read_config_value GP_CLOUD_PREVIEW_DOMAIN "$CONFIG_ROOT/caddy.env")
   GP_CLOUD_CONTROL_PORT=$(read_config_value GP_CLOUD_CONTROL_PORT "$CONFIG_ROOT/caddy.env")
   GP_CLOUD_CADDY_ACME_EMAIL=$(read_config_value GP_CLOUD_CADDY_ACME_EMAIL "$CONFIG_ROOT/caddy.env")
-  GP_CLOUD_CLOUDFLARE_API_TOKEN=$(read_config_value GP_CLOUD_CLOUDFLARE_API_TOKEN "$CONFIG_ROOT/caddy.env")
+  GP_CLOUD_DNS_PROVIDER=$(read_config_value GP_CLOUD_DNS_PROVIDER "$CONFIG_ROOT/caddy.env")
+  GP_CLOUD_DNS_CREDENTIAL=$(read_config_value GP_CLOUD_DNS_CREDENTIAL "$CONFIG_ROOT/caddy.env")
+  if [[ -z "$GP_CLOUD_DNS_PROVIDER" ]]; then
+    GP_CLOUD_DNS_PROVIDER=cloudflare
+    GP_CLOUD_DNS_CREDENTIAL=$(read_config_value GP_CLOUD_CLOUDFLARE_API_TOKEN "$CONFIG_ROOT/caddy.env")
+  fi
   GP_CLOUD_PUBLIC_SCHEME=$(read_config_value GP_CLOUD_PUBLIC_SCHEME "$CONFIG_ROOT/gp-cloud.env")
   GP_CLOUD_COOKIE_SECURE=$(read_config_value GP_CLOUD_COOKIE_SECURE "$CONFIG_ROOT/gp-cloud.env")
   CONTROL_DOMAIN=$(read_config_value GP_CLOUD_PREVIEW_DOMAIN "$CONFIG_ROOT/gp-cloud.env")
@@ -91,16 +96,22 @@ if [[ "$ENABLE_PUBLIC_EDGE" == "1" ]]; then
     exit 1
   }
   export GP_CLOUD_PREVIEW_DOMAIN GP_CLOUD_CONTROL_PORT GP_CLOUD_CADDY_ACME_EMAIL
-  export GP_CLOUD_CLOUDFLARE_API_TOKEN
+  export GP_CLOUD_DNS_PROVIDER GP_CLOUD_DNS_CREDENTIAL
   : "${GP_CLOUD_PREVIEW_DOMAIN:?configure GP_CLOUD_PREVIEW_DOMAIN before enabling the edge}"
   : "${GP_CLOUD_CADDY_ACME_EMAIL:?configure GP_CLOUD_CADDY_ACME_EMAIL before enabling the edge}"
-  : "${GP_CLOUD_CLOUDFLARE_API_TOKEN:?configure GP_CLOUD_CLOUDFLARE_API_TOKEN before enabling the edge}"
+  : "${GP_CLOUD_DNS_PROVIDER:?configure GP_CLOUD_DNS_PROVIDER before enabling the edge}"
+  : "${GP_CLOUD_DNS_CREDENTIAL:?configure GP_CLOUD_DNS_CREDENTIAL before enabling the edge}"
   [[ "${GP_CLOUD_PUBLIC_SCHEME:-}" == "https" && "${GP_CLOUD_COOKIE_SECURE:-}" == "true" ]] || {
     echo "public edge requires GP_CLOUD_PUBLIC_SCHEME=https and GP_CLOUD_COOKIE_SECURE=true" >&2
     exit 1
   }
-  caddy list-modules | grep -qx 'dns.providers.cloudflare' || {
-    echo "Caddy requires the caddy-dns/cloudflare module for wildcard DNS-01" >&2
+  case "$GP_CLOUD_DNS_PROVIDER" in
+    cloudflare) DNS_MODULE=dns.providers.cloudflare ;;
+    godaddy) DNS_MODULE=dns.providers.godaddy ;;
+    *) echo "unsupported GP_CLOUD_DNS_PROVIDER: $GP_CLOUD_DNS_PROVIDER" >&2; exit 1 ;;
+  esac
+  caddy list-modules | grep -qx "$DNS_MODULE" || {
+    echo "Caddy requires the $DNS_MODULE module for wildcard DNS-01" >&2
     exit 1
   }
   caddy validate --config "$SOURCE_ROOT/caddy/Caddyfile"

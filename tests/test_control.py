@@ -217,7 +217,7 @@ class ControlContractTests(unittest.TestCase):
         root = Path(__file__).parents[1]
         caddyfile = (root / "caddy/Caddyfile").read_text(encoding="utf-8")
         self.assertIn("https://*.{$GP_CLOUD_PREVIEW_DOMAIN}", caddyfile)
-        self.assertIn("dns cloudflare", caddyfile)
+        self.assertIn("dns {$GP_CLOUD_DNS_PROVIDER} {$GP_CLOUD_DNS_CREDENTIAL}", caddyfile)
         self.assertIn("webhook.{$GP_CLOUD_PREVIEW_DOMAIN}", caddyfile)
         self.assertIn("actions.{$GP_CLOUD_PREVIEW_DOMAIN}", caddyfile)
         self.assertIn("control.{$GP_CLOUD_PREVIEW_DOMAIN}", caddyfile)
@@ -225,6 +225,13 @@ class ControlContractTests(unittest.TestCase):
         self.assertNotIn(":{$GP_CLOUD_HTTP_PORT}", caddyfile)
         self.assertNotIn("path /metrics", caddyfile)
         self.assertNotIn("path /v1", caddyfile)
+
+    def test_public_edge_installer_supports_cloudflare_and_godaddy(self):
+        root = Path(__file__).parents[1]
+        installer = (root / "scripts/gp-cloud-install").read_text(encoding="utf-8")
+        self.assertIn("cloudflare) DNS_MODULE=dns.providers.cloudflare", installer)
+        self.assertIn("godaddy) DNS_MODULE=dns.providers.godaddy", installer)
+        self.assertIn('*) echo "unsupported GP_CLOUD_DNS_PROVIDER:', installer)
 
     def test_runtime_and_monitoring_installation_contracts_are_isolated(self):
         root = Path(__file__).parents[1]
