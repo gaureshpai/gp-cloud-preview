@@ -1022,7 +1022,9 @@ class LifecycleRegressionTests(unittest.TestCase):
                     control.approved_runtime_env_file({**state, "allow_pr_secrets": False})
                 )
                 with self.assertRaisesRegex(ValueError, "simple .env filename"):
-                    control.approved_runtime_env_file({**state, "runtime_env_file": "../outside.env"})
+                    control.approved_runtime_env_file(
+                        {**state, "runtime_env_file": "../outside.env"}
+                    )
                 outside = root / "outside.env"
                 outside.write_text("LEAK=1\n", encoding="utf-8")
                 (env_dir / "link.env").symlink_to(outside)
