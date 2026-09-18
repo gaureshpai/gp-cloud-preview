@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+SOURCE_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+if [[ -z "${XCADDY:-}" ]]; then
+  if command -v xcaddy >/dev/null; then
+    XCADDY=$(command -v xcaddy)
+  else
+    XCADDY="$(go env GOPATH)/bin/xcaddy"
+  fi
+fi
+CADDY_VERSION=${GP_CLOUD_CADDY_VERSION:-v2.11.4}
+OUTPUT=${1:-/usr/local/bin/caddy}
+BUILD_ROOT=$(mktemp -d)
+trap 'rm -rf "$BUILD_ROOT"' EXIT
+
+command -v "$XCADDY" >/dev/null || {
+  echo "missing prerequisite: xcaddy" >&2
+  exit 1
+}
+
+"$XCADDY" build "$CADDY_VERSION" \
+  --output "$BUILD_ROOT/caddy" \
+  --with github.com/caddy-dns/cloudflare \
+  --with "github.com/gaureshpai/gp-cloud-preview/caddy/godaddyv3=$SOURCE_ROOT/caddy/godaddyv3"
+
+"$BUILD_ROOT/caddy" list-modules | grep -qx 'dns.providers.cloudflare'
+"$BUILD_ROOT/caddy" list-modules | grep -qx 'dns.providers.godaddy'
+install -m 0755 "$BUILD_ROOT/caddy" "$OUTPUT"
+echo "Installed Caddy $CADDY_VERSION with Cloudflare and GoDaddy v3 DNS providers at $OUTPUT"

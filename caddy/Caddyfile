@@ -3,8 +3,8 @@
 }
 
 # Public mode requires a Caddy build containing the configured DNS provider.
-# One DNS-01 wildcard certificate covers previews and the two narrow ingress
-# hosts. The token belongs only in Caddy's root-owned environment file.
+# GoDaddy uses a PAT with its v3 DNS API; Cloudflare uses its provider module.
+# Credentials belong only in Caddy's root-owned environment file.
 https://*.{$GP_CLOUD_PREVIEW_DOMAIN} {
 	tls {
 		dns {$GP_CLOUD_DNS_PROVIDER} {$GP_CLOUD_DNS_CREDENTIAL}

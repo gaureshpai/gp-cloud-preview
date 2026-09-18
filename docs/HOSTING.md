@@ -50,10 +50,14 @@ Create an A/AAAA wildcard record such as:
 *.preview.example.com -> public VM address
 ```
 
-Install/build Caddy with the DNS provider module for the authoritative DNS
-provider. For Cloudflare use `github.com/caddy-dns/cloudflare`; for GoDaddy use
-`github.com/caddy-dns/godaddy`. Create DNS API credentials limited to this
-zone. Configure `gp-cloud.env`:
+Build Caddy with the bundled GoDaddy v3 provider or Cloudflare module:
+
+```sh
+sudo ./scripts/gp-cloud-build-caddy
+```
+
+For GoDaddy, create a Personal Access Token with `domains.dns:update` scope.
+For Cloudflare, use a zone-limited API token. Configure `gp-cloud.env`:
 
 ```dotenv
 GP_CLOUD_PREVIEW_DOMAIN=preview.example.com
@@ -62,16 +66,15 @@ GP_CLOUD_HTTP_PORT=443
 GP_CLOUD_COOKIE_SECURE=true
 ```
 
-Configure edge-only `/opt/gp-cloud/config/caddy.env`. For GoDaddy, set the
-credential to `<API key>:<API secret>`; for Cloudflare, set it to the
-zone-limited API token:
+Configure edge-only `/opt/gp-cloud/config/caddy.env` with the GoDaddy PAT or
+Cloudflare token:
 
 ```dotenv
 GP_CLOUD_PREVIEW_DOMAIN=preview.example.com
 GP_CLOUD_CONTROL_PORT=8787
 GP_CLOUD_CADDY_ACME_EMAIL=operator@example.com
 GP_CLOUD_DNS_PROVIDER=godaddy
-GP_CLOUD_DNS_CREDENTIAL=<api-key>:<api-secret>
+GP_CLOUD_DNS_CREDENTIAL=<GoDaddy PAT>
 ```
 
 Rerun the explicit public installer path:

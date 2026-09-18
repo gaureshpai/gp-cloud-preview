@@ -107,9 +107,14 @@ Then open `http://127.0.0.1:8787/ui`.
 ## Optional wildcard HTTPS
 
 Public mode uses a DNS-01 wildcard certificate managed and renewed by Caddy.
-Build Caddy with the module for your DNS provider: `github.com/caddy-dns/cloudflare`
-or `github.com/caddy-dns/godaddy`. Configure wildcard DNS
-(`*.preview.example.com`) and set these values in `gp-cloud.env`:
+Build Caddy with the bundled GoDaddy v3 provider or Cloudflare module:
+
+```sh
+sudo ./scripts/gp-cloud-build-caddy
+```
+
+Configure wildcard DNS (`*.preview.example.com`) and set these values in
+`gp-cloud.env`:
 
 ```dotenv
 GP_CLOUD_PREVIEW_DOMAIN=preview.example.com
@@ -125,7 +130,7 @@ GP_CLOUD_PREVIEW_DOMAIN=preview.example.com
 GP_CLOUD_CONTROL_PORT=8787
 GP_CLOUD_CADDY_ACME_EMAIL=operator@example.com
 GP_CLOUD_DNS_PROVIDER=godaddy
-GP_CLOUD_DNS_CREDENTIAL=<api-key>:<api-secret>
+GP_CLOUD_DNS_CREDENTIAL=<GoDaddy PAT>
 ```
 
 Then rerun:

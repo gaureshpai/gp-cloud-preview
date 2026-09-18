@@ -9,7 +9,12 @@ ruff format --check control tests
 bash -n scripts/gp-cloud-clean scripts/gp-cloud-deploy scripts/gp-cloud-inspect \
   scripts/gp-cloud-install scripts/gp-cloud-monitoring scripts/gp-cloud-tls-smoke scripts/check
 shellcheck scripts/gp-cloud-clean scripts/gp-cloud-deploy scripts/gp-cloud-inspect \
-  scripts/gp-cloud-install scripts/gp-cloud-monitoring scripts/gp-cloud-tls-smoke scripts/check
+  scripts/gp-cloud-install scripts/gp-cloud-monitoring scripts/gp-cloud-tls-smoke \
+  scripts/gp-cloud-build-caddy scripts/check
+
+if command -v go >/dev/null && [[ -f caddy/godaddyv3/go.mod ]]; then
+  (cd caddy/godaddyv3 && go test ./...)
+fi
 
 if command -v caddy >/dev/null; then
   CHECK_FORMATTED=$(mktemp)
