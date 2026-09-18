@@ -1441,7 +1441,8 @@ def update_github_status(state: dict, status: str) -> None:
     preview = read_preview(str(state.get("preview_id") or ""))
     if not preview:
         return
-    current = read_state(str(preview.get("current_deployment_id") or ""))
+    current_id = str(preview.get("current_deployment_id") or "")
+    current = read_state(current_id) if current_id else None
     current_url = str((current or {}).get("preview_url") or "")
     body = f"GP Cloud Preview status: **{status}**."
     if current_url:

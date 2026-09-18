@@ -9,6 +9,7 @@ Type=simple
 User=root
 WorkingDirectory=/opt/gp-cloud/control
 EnvironmentFile=/opt/gp-cloud/config/gp-cloud.env
+Environment=DOCKER_CONFIG=/opt/gp-cloud/data/docker-config
 ExecStart=/usr/bin/python3 /opt/gp-cloud/control/gp_cloud_control.py
 Restart=always
 RestartSec=3

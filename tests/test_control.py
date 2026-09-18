@@ -68,6 +68,19 @@ class ControlContractTests(unittest.TestCase):
         self.assertNotIn("clone_token_file", value)
         self.assertNotIn("action_token_hash", value)
 
+    def test_github_status_handles_preview_without_current_deployment(self):
+        with (
+            patch.object(control, "read_preview", return_value={"current_deployment_id": None}),
+            patch.object(control, "read_state") as read_state,
+            patch.object(control, "github_api_write", return_value={}),
+        ):
+            control.update_github_status(
+                {"pr_number": 29, "preview_id": "preview_test", "repo": "owner/site"},
+                "building",
+            )
+
+        read_state.assert_not_called()
+
     def test_queue_marker_rejects_symlinked_marker_path(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
